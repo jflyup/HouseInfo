@@ -7,7 +7,7 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/http/httputil"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -36,6 +36,11 @@ var (
 		10002, // Sharp
 	}
 
+	mediaTypes = []string{
+		"audio",
+		"video",
+		"image",
+	}
 	// TODO IPv6 link-local multicast
 	upnpAddr = &net.UDPAddr{
 		IP:   net.ParseIP("239.255.255.250"),
@@ -48,23 +53,24 @@ const (
 	multicastWaitTimeSeconds = 3
 )
 
+type UPNP struct {
+	devices map[string]*device
+}
+
 // device Description xml elements
 type service struct {
 	urlBase     string
 	ServiceType string `xml:"serviceType"`
 	//ServiceId   string `xml:"serviceId"`
-	SCPDURL    string `xml:"SCPDURL"`
-	ControlURL string `xml:"controlURL"`
-	actions    []string
+	SCPDURL        string `xml:"SCPDURL"`
+	ControlURL     string `xml:"controlURL"`
+	actions        []string
+	supportedMedia []string
 	//EventSubURL string `xml:"eventSubURL"`
 }
 
 type actionList struct {
 	ActionName []string `xml:"action>name"`
-}
-
-type UPNP struct {
-	devices map[string]*device
 }
 
 type device struct {
@@ -77,10 +83,12 @@ type device struct {
 	ModelName        string `xml:"modelName"`
 	Host             string
 	urlBase          string
-	DeviceDescUrl    string
-	Cache            string
+	location         string
 	ST               string
 	USN              string
+	ipAddr           string
+	openPorts        []int
+	mu               sync.Mutex
 	ServiceList      []*service `xml:"serviceList>service"`
 }
 
@@ -102,7 +110,8 @@ func (s *service) getActionList() error {
 	header.Set("Host", strings.Split(strings.Split(s.urlBase, "//")[1], "/")[0])
 	header.Set("Connection", "keep-alive")
 
-	request, _ := http.NewRequest("GET", s.urlBase+s.SCPDURL, nil)
+	// different implementations return SCPDURL with "/" or not
+	request, _ := http.NewRequest("GET", s.urlBase+strings.TrimPrefix(s.SCPDURL, "/"), nil)
 	request.Header = header
 
 	response, err := http.DefaultClient.Do(request)
@@ -161,6 +170,10 @@ func (s *service) perform(action, body string) (*http.Response, error) {
 	return resp, err
 }
 
+type protocolInfo struct {
+	Protocol string `xml:",chardata"`
+}
+
 func (s *service) getProtocolInfo() {
 	action := `"urn:schemas-upnp-org:service:ConnectionManager:1#GetProtocolInfo"`
 	body := `<m:GetProtocolInfo xmlns:m="urn:schemas-upnp-org:service:ConnectionManager:1"/>`
@@ -171,8 +184,24 @@ func (s *service) getProtocolInfo() {
 		return
 	}
 
-	dumpresp, _ := httputil.DumpResponse(r, true)
-	log.Println(string(dumpresp))
+	decoder := xml.NewDecoder(r.Body)
+	for t, err := decoder.Token(); err == nil; t, err = decoder.Token() {
+		switch se := t.(type) {
+		case xml.StartElement:
+			if se.Name.Local == "Sink" {
+				var elem protocolInfo
+				if err := decoder.DecodeElement(&elem, &se); err != nil {
+					return
+				}
+
+				for _, mediaType := range mediaTypes {
+					if strings.Contains(elem.Protocol, mediaType) {
+						s.supportedMedia = append(s.supportedMedia, mediaType)
+					}
+				}
+			}
+		}
+	}
 }
 
 type urlBaseElem struct {
@@ -187,9 +216,10 @@ func (d *device) tryRemoteControl() {
 		// concurrency everywhere
 		go func(port int) {
 			defer wg.Done()
-			if conn, err := net.DialTimeout("tcp", strings.Split(d.Host, ":")[0]+
-				":"+strconv.Itoa(port), time.Second*3); err == nil && conn != nil {
-				log.Printf("%d is open", port)
+			if conn, err := net.DialTimeout("tcp", d.ipAddr+":"+strconv.Itoa(port), time.Second*3); err == nil && conn != nil {
+				d.mu.Lock()
+				d.openPorts = append(d.openPorts, port)
+				d.mu.Unlock()
 				conn.Close()
 			}
 		}(port)
@@ -203,7 +233,7 @@ func (d *device) getDeviceDesc() error {
 	header.Set("Host", d.Host)
 	header.Set("Connection", "keep-alive")
 
-	request, _ := http.NewRequest("GET", "http://"+d.Host+d.DeviceDescUrl, nil)
+	request, _ := http.NewRequest("GET", d.location, nil)
 	request.Header = header
 
 	response, err := http.DefaultClient.Do(request)
@@ -229,10 +259,12 @@ func (d *device) getDeviceDesc() error {
 				if d.urlBase == "" {
 					d.urlBase = "http://" + d.Host + "/"
 				} else {
-					d.urlBase += "/"
+					if !strings.HasSuffix(d.urlBase, "/") {
+						d.urlBase += "/"
+					}
 				}
 				if err := decoder.DecodeElement(d, &se); err != nil {
-					log.Printf("bad xml", err)
+					log.Println("bad xml", err)
 					return err
 				}
 
@@ -254,7 +286,6 @@ func (u *UPNP) findDevice(st string) error {
 		"MAN: \"ssdp:discover\"\r\n" +
 		"MX: 3\r\n\r\n"
 
-	// Listening port for response
 	localAddr, err := net.ResolveUDPAddr("udp", ":0")
 	if err != nil {
 		return err
@@ -273,7 +304,7 @@ func (u *UPNP) findDevice(st string) error {
 		}
 
 		conn.SetReadDeadline(time.Now().Add(multicastWaitTimeSeconds * time.Second))
-		n, _, err := conn.ReadFromUDP(buf)
+		n, remoteAddr, err := conn.ReadFromUDP(buf)
 		if err != nil {
 			if e, ok := err.(net.Error); ok && e.Timeout() {
 				continue
@@ -283,7 +314,7 @@ func (u *UPNP) findDevice(st string) error {
 		response := string(buf[:n])
 
 		dev := &device{}
-
+		dev.ipAddr = remoteAddr.IP.String()
 		lines := strings.Split(response, "\r\n")
 		for _, line := range lines {
 			nameValues := strings.SplitAfterN(line, ":", 2)
@@ -293,12 +324,9 @@ func (u *UPNP) findDevice(st string) error {
 			switch strings.ToUpper(strings.Trim(strings.Split(nameValues[0], ":")[0], " ")) {
 			case "ST":
 				dev.ST = nameValues[1]
-			case "CACHE-CONTROL":
-				dev.Cache = nameValues[1]
 			case "LOCATION":
-				urls := strings.Split(strings.Split(nameValues[1], "//")[1], "/")
-				dev.Host = urls[0]
-				dev.DeviceDescUrl = "/" + urls[1]
+				dev.location = nameValues[1]
+				dev.Host = strings.Split(strings.Split(nameValues[1], "//")[1], "/")[0]
 			case "USN":
 				dev.USN = nameValues[1]
 			}
@@ -335,10 +363,11 @@ func main() {
 		return
 	}
 
-	time.Sleep(10 * time.Second)
+	time.Sleep(20 * time.Second)
 
 	log.Printf("found %d devices:", len(u.devices))
 	for _, d := range u.devices {
+		log.Printf("device IP: %s", d.ipAddr)
 		log.Printf("device type: %s", d.DeviceType)
 		log.Printf("friendlyName: %s", d.FriendlyName)
 		log.Printf("manufacturer: %s", d.Manufacturer)
@@ -347,6 +376,9 @@ func main() {
 		for _, s := range d.ServiceList {
 			log.Printf("service type: %s", s.ServiceType)
 			log.Printf("action list: %v", s.actions)
+			if s.ServiceType == "urn:schemas-upnp-org:service:ConnectionManager:1" {
+				log.Printf("getProtocolInfo: %v", s.supportedMedia)
+			}
 		}
 		log.Printf("--------------------------------------")
 	}
