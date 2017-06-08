@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/xml"
-	"errors"
 	"flag"
 	"log"
 	"net"
@@ -27,7 +26,7 @@ var (
 		"urn:schemas-upnp-org:device:MediaRenderer:1",
 		"urn:schemas-upnp-org:device:MediaServer:1",
 	}
-	remoteControlPorts = []uint16{
+	remoteControlPorts = []int{
 		80,    // Sony
 		8060,  // Roku
 		1925,  // Philips
@@ -62,10 +61,11 @@ type service struct {
 	urlBase     string
 	ServiceType string `xml:"serviceType"`
 	//ServiceId   string `xml:"serviceId"`
-	SCPDURL        string `xml:"SCPDURL"`
-	ControlURL     string `xml:"controlURL"`
-	actions        []string
-	supportedMedia []string
+	SCPDURL     string `xml:"SCPDURL"`
+	ControlURL  string `xml:"controlURL"`
+	actions     []string
+	sourceProto []string
+	sinkProto   []string
 	//EventSubURL string `xml:"eventSubURL"`
 }
 
@@ -100,6 +100,7 @@ func NewUPNP() (*UPNP, error) {
 
 	for _, st := range serviceTypes {
 		go u.findDevice(st)
+		time.Sleep(time.Millisecond * 100)
 	}
 
 	return u, nil
@@ -158,20 +159,18 @@ func (s *service) perform(action, body string) (*http.Response, error) {
 	header.Set("Connection", "Close")
 	header.Set("Content-Length", string(len(envelope)))
 
-	url := s.urlBase + s.ControlURL
+	url := s.urlBase + strings.TrimPrefix(s.ControlURL, "/")
 	req, _ := http.NewRequest("POST", url, strings.NewReader(envelope))
 	req.Header = header
-
-	//dumpreq, _ := httputil.DumpRequestOut(req, true)
-	//log.Println(string(dumpreq))
 
 	resp, err := http.DefaultClient.Do(req)
 
 	return resp, err
 }
 
-type protocolInfo struct {
-	Protocol string `xml:",chardata"`
+type protocolInfoResp struct {
+	Source string `xml:"Source"`
+	Sink   string `xml:"Sink"`
 }
 
 func (s *service) getProtocolInfo() {
@@ -188,15 +187,18 @@ func (s *service) getProtocolInfo() {
 	for t, err := decoder.Token(); err == nil; t, err = decoder.Token() {
 		switch se := t.(type) {
 		case xml.StartElement:
-			if se.Name.Local == "Sink" {
-				var elem protocolInfo
+			if se.Name.Local == "GetProtocolInfoResponse" {
+				var elem protocolInfoResp
 				if err := decoder.DecodeElement(&elem, &se); err != nil {
 					return
 				}
 
 				for _, mediaType := range mediaTypes {
-					if strings.Contains(elem.Protocol, mediaType) {
-						s.supportedMedia = append(s.supportedMedia, mediaType)
+					if strings.Contains(elem.Source, mediaType) {
+						s.sourceProto = append(s.sourceProto, mediaType)
+					}
+					if strings.Contains(elem.Sink, mediaType) {
+						s.sinkProto = append(s.sinkProto, mediaType)
 					}
 				}
 			}
@@ -212,7 +214,7 @@ func (d *device) tryRemoteControl() {
 	var wg sync.WaitGroup
 	wg.Add(len(remoteControlPorts))
 
-	for port := range remoteControlPorts {
+	for _, port := range remoteControlPorts {
 		// concurrency everywhere
 		go func(port int) {
 			defer wg.Done()
@@ -239,7 +241,8 @@ func (d *device) getDeviceDesc() error {
 	response, err := http.DefaultClient.Do(request)
 
 	if response == nil || err != nil || response.StatusCode != 200 {
-		return errors.New("upnp: bad response getting device description")
+		log.Printf("failed to get device description: %v", err)
+		return err
 	}
 
 	decoder := xml.NewDecoder(response.Body)
@@ -298,45 +301,51 @@ func (u *UPNP) findDevice(st string) error {
 
 	buf := make([]byte, 10240)
 	for i := 0; i < multicastRetryCount; i++ {
+		// write multiple times?
 		_, err = conn.WriteToUDP([]byte(search), upnpAddr)
 		if err != nil {
 			return err
 		}
 
 		conn.SetReadDeadline(time.Now().Add(multicastWaitTimeSeconds * time.Second))
-		n, remoteAddr, err := conn.ReadFromUDP(buf)
-		if err != nil {
-			if e, ok := err.(net.Error); ok && e.Timeout() {
-				continue
+		for {
+			n, remoteAddr, err := conn.ReadFromUDP(buf)
+			if err != nil {
+				if e, ok := err.(net.Error); ok && e.Timeout() {
+					break
+				}
+				return err
 			}
-			return err
-		}
-		response := string(buf[:n])
+			response := string(buf[:n])
 
-		dev := &device{}
-		dev.ipAddr = remoteAddr.IP.String()
-		lines := strings.Split(response, "\r\n")
-		for _, line := range lines {
-			nameValues := strings.SplitAfterN(line, ":", 2)
-			if len(nameValues) < 2 {
-				continue
-			}
-			switch strings.ToUpper(strings.Trim(strings.Split(nameValues[0], ":")[0], " ")) {
-			case "ST":
-				dev.ST = nameValues[1]
-			case "LOCATION":
-				dev.location = nameValues[1]
-				dev.Host = strings.Split(strings.Split(nameValues[1], "//")[1], "/")[0]
-			case "USN":
-				dev.USN = nameValues[1]
-			}
-		}
+			dev := &device{}
+			dev.ipAddr = remoteAddr.IP.String()
+			lines := strings.Split(response, "\r\n")
+			for _, line := range lines {
+				keyValue := strings.SplitN(line, ":", 2)
+				if len(keyValue) < 2 {
+					continue
+				}
+				k := strings.Trim(keyValue[0], " ")
+				v := strings.Trim(keyValue[1], " ")
 
-		if dev.USN != "" {
-			if _, ok := u.devices[dev.USN]; !ok {
-				u.devices[dev.USN] = dev
-				go dev.getDeviceDesc()
-				go dev.tryRemoteControl()
+				switch strings.ToUpper(k) {
+				case "ST":
+					dev.ST = v
+				case "LOCATION":
+					dev.location = v
+					dev.Host = strings.Split(strings.Split(v, "//")[1], "/")[0]
+				case "USN":
+					dev.USN = v
+				}
+			}
+
+			if dev.USN != "" {
+				if _, ok := u.devices[dev.USN]; !ok {
+					u.devices[dev.USN] = dev
+					go dev.getDeviceDesc()
+					go dev.tryRemoteControl()
+				}
 			}
 		}
 	}
@@ -365,10 +374,11 @@ func main() {
 
 	time.Sleep(20 * time.Second)
 
-	log.Printf("found %d devices:", len(u.devices))
+	log.Printf("------------found %d devices-----------", len(u.devices))
 	for _, d := range u.devices {
 		log.Printf("device IP: %s", d.ipAddr)
 		log.Printf("device type: %s", d.DeviceType)
+		log.Printf("possible remote control port: %v", d.openPorts)
 		log.Printf("friendlyName: %s", d.FriendlyName)
 		log.Printf("manufacturer: %s", d.Manufacturer)
 		log.Printf("modelDescription: %s", d.ModelDescription)
@@ -377,7 +387,7 @@ func main() {
 			log.Printf("service type: %s", s.ServiceType)
 			log.Printf("action list: %v", s.actions)
 			if s.ServiceType == "urn:schemas-upnp-org:service:ConnectionManager:1" {
-				log.Printf("getProtocolInfo: %v", s.supportedMedia)
+				log.Printf("getProtocolInfo: source:%v, sink:%v", s.sourceProto, s.sinkProto)
 			}
 		}
 		log.Printf("--------------------------------------")
