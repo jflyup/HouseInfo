@@ -2,11 +2,9 @@ package main
 
 import (
 	"encoding/xml"
-	"flag"
 	"log"
 	"net"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -118,7 +116,7 @@ func (s *service) getActionList() error {
 	response, err := http.DefaultClient.Do(request)
 
 	if response == nil || err != nil || response.StatusCode != 200 {
-		log.Printf("can't get SCPD xml: %v", err)
+		log.Printf("can't get SCPD xml: %v, url: %s", err, s.SCPDURL)
 		return err
 	}
 
@@ -179,7 +177,7 @@ func (s *service) getProtocolInfo() {
 
 	r, err := s.perform(action, body)
 	if r.StatusCode != 200 || err != nil {
-		log.Printf("getProtocolInfo failed")
+		log.Printf("getProtocolInfo failed: %v, %v, control url: %s", err, r.StatusCode, s.ControlURL)
 		return
 	}
 
@@ -351,45 +349,4 @@ func (u *UPNP) findDevice(st string) error {
 	}
 
 	return nil
-}
-
-func main() {
-	var logFile = flag.String("o", "", "log file")
-	flag.Parse()
-
-	if len(*logFile) != 0 {
-		f, err := os.OpenFile(*logFile, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0666)
-		if err != nil {
-			log.Printf("can't open %s", *logFile)
-		}
-		defer f.Close()
-		log.SetOutput(f)
-	}
-
-	u, err := NewUPNP()
-	if err != nil {
-		log.Printf("failed to discover UPnP devices")
-		return
-	}
-
-	time.Sleep(20 * time.Second)
-
-	log.Printf("------------found %d devices-----------", len(u.devices))
-	for _, d := range u.devices {
-		log.Printf("device IP: %s", d.ipAddr)
-		log.Printf("device type: %s", d.DeviceType)
-		log.Printf("possible remote control port: %v", d.openPorts)
-		log.Printf("friendlyName: %s", d.FriendlyName)
-		log.Printf("manufacturer: %s", d.Manufacturer)
-		log.Printf("modelDescription: %s", d.ModelDescription)
-		log.Printf("modelName: %s", d.ModelName)
-		for _, s := range d.ServiceList {
-			log.Printf("service type: %s", s.ServiceType)
-			log.Printf("action list: %v", s.actions)
-			if s.ServiceType == "urn:schemas-upnp-org:service:ConnectionManager:1" {
-				log.Printf("getProtocolInfo: source:%v, sink:%v", s.sourceProto, s.sinkProto)
-			}
-		}
-		log.Printf("--------------------------------------")
-	}
 }
