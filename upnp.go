@@ -12,22 +12,26 @@ import (
 )
 
 var (
-	serviceTypes = []string{
+	deviceTypes = []string{
 		"urn:samsung.com:device:RemoteControlReceiver:1", // samsung TV
 		"urn:schemas-sony-com:service:IRCC:1",            // sony TV
 		"urn:schemas-sony-com:service:ScalarWebAPI:1",    // sony TV
 		"urn:panasonic-com:device:p00RemoteController:1", // panasonic TV
 		"urn:roku-com:service:ecp:1",                     // roku TV
 
-		// common service type
-		"urn:dial-multiscreen-org:service:dial:1",
+		// common UPnP device
+		"urn:dial-multiscreen-org:device:dial:1",
+		"urn:dial-multiscreen-org:device:dialreceiver:1",
 		"urn:schemas-upnp-org:device:MediaRenderer:1",
 		"urn:schemas-upnp-org:device:MediaServer:1",
+		"urn:schemas-upnp-org:device:Basic:1",
+		"urn:schemas-upnp-org:device:tvdevice:1",
 	}
 	remoteControlPorts = []int{
-		80,    // Sony
-		8060,  // Roku
-		1925,  // Philips
+		80,         // Sony
+		8060,       // Roku
+		1925, 1926, // Philips
+		8001,  // Samsung websocket
 		55000, // Samsung, Panasonic
 		8080,  // LG
 		10002, // Sharp
@@ -50,8 +54,9 @@ const (
 	multicastWaitTimeSeconds = 3
 )
 
+// UPNP represents all UPnP services in the LAN
 type UPNP struct {
-	devices map[string]*device
+	hosts map[string][]*device
 }
 
 // device Description xml elements
@@ -83,7 +88,6 @@ type device struct {
 	urlBase          string
 	location         string
 	ST               string
-	USN              string
 	ipAddr           string
 	openPorts        []int
 	mu               sync.Mutex
@@ -93,10 +97,10 @@ type device struct {
 // NewUPNP returns a new UPNP object with a populated device object.
 func NewUPNP() (*UPNP, error) {
 	u := &UPNP{
-		devices: make(map[string]*device),
+		hosts: make(map[string][]*device),
 	}
 
-	for _, st := range serviceTypes {
+	for _, st := range deviceTypes {
 		go u.findDevice(st)
 		time.Sleep(time.Millisecond * 100)
 	}
@@ -177,7 +181,7 @@ func (s *service) getProtocolInfo() {
 
 	r, err := s.perform(action, body)
 	if r.StatusCode != 200 || err != nil {
-		log.Printf("getProtocolInfo failed: %v, %v, control url: %s", err, r.StatusCode, s.ControlURL)
+		log.Printf("getProtocolInfo failed: %v, %v, control url: %s", err, r.StatusCode, s.urlBase+strings.TrimPrefix(s.ControlURL, "/"))
 		return
 	}
 
@@ -207,6 +211,16 @@ func (s *service) getProtocolInfo() {
 type urlBaseElem struct {
 	URL string `xml:",chardata"`
 }
+
+// func isHttpServer(host string) {
+// 	header.Set("Host", d.Host)
+// 	header.Set("Connection", "keep-alive")
+
+// 	request, _ := http.NewRequest("GET", d.location, nil)
+// 	request.Header = header
+
+// 	response, err := http.DefaultClient.Do(request)
+// }
 
 func (d *device) tryRemoteControl() {
 	var wg sync.WaitGroup
@@ -239,7 +253,7 @@ func (d *device) getDeviceDesc() error {
 	response, err := http.DefaultClient.Do(request)
 
 	if response == nil || err != nil || response.StatusCode != 200 {
-		log.Printf("failed to get device description: %v", err)
+		log.Printf("failed to get device description: %s", d.location)
 		return err
 	}
 
@@ -333,17 +347,26 @@ func (u *UPNP) findDevice(st string) error {
 				case "LOCATION":
 					dev.location = v
 					dev.Host = strings.Split(strings.Split(v, "//")[1], "/")[0]
-				case "USN":
-					dev.USN = v
 				}
 			}
 
-			if dev.USN != "" {
-				if _, ok := u.devices[dev.USN]; !ok {
-					u.devices[dev.USN] = dev
-					go dev.getDeviceDesc()
-					go dev.tryRemoteControl()
+			if devices, ok := u.hosts[dev.ipAddr]; ok {
+				// check dups
+				dup := false
+				for _, d := range devices {
+					if d.ST == dev.ST {
+						dup = true
+						break
+					}
 				}
+				if !dup {
+					u.hosts[dev.ipAddr] = append(devices, dev)
+					go dev.getDeviceDesc()
+				}
+			} else {
+				go dev.tryRemoteControl()
+				u.hosts[dev.ipAddr] = append(u.hosts[dev.ipAddr], dev)
+				go dev.getDeviceDesc()
 			}
 		}
 	}

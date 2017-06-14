@@ -254,6 +254,11 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 								st,
 								domain)
 						}
+						if ipv4 := msg.addr.IP.To4(); ipv4 != nil {
+							entries[rr.Hdr.Name].AddrIPv4 = ipv4
+						} else {
+							entries[rr.Hdr.Name].AddrIPv6 = msg.addr.IP
+						}
 						entries[rr.Hdr.Name].HostName = rr.Target
 						entries[rr.Hdr.Name].Port = int(rr.Port)
 						entries[rr.Hdr.Name].TTL = rr.Hdr.Ttl
@@ -264,21 +269,21 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 					// we have little interest in TXT record except _device_info._tcp
 					// pseudo service (it's a TXT record)
 
-					if pos := strings.Index(rr.Hdr.Name, "._device-info._tcp."); pos != -1 {
-						// it's tricky to connect this TXT record with a host.
-						// Typically, the first DNS name label is the default service instance name
-						// and can contain any Unicode characters encoded in UTF-8.
-						// iPhone/iPad advertises some services(such as _apple-mobdev2._tcp, _homekit._tcp)
-						// using special instance name(for example, _apple-mobdev2._tcp uses mac+ipv6 as it,
-						// 90:72:40:ba:0b:e9\@fe80::9272:40ff:feba:be9._apple-mobdev2._tcp.local),
-						// then this TXT record chooses another instance name or use hostname as
-						// instance name. If so, things get complicated.
-						instanceName := rr.Hdr.Name[:pos]
+					//if pos := strings.Index(rr.Hdr.Name, "._device-info._tcp."); pos != -1 {
+					// it's tricky to connect this TXT record with a host.
+					// Typically, the first DNS name label is the default service instance name
+					// and can contain any Unicode characters encoded in UTF-8.
+					// iPhone/iPad advertises some services(such as _apple-mobdev2._tcp, _homekit._tcp)
+					// using special instance name(for example, _apple-mobdev2._tcp uses mac+ipv6 as it,
+					// 90:72:40:ba:0b:e9\@fe80::9272:40ff:feba:be9._apple-mobdev2._tcp.local),
+					// then this TXT record chooses another instance name or use hostname as
+					// instance name. If so, things get complicated.
+					if instance, st, domain, err := parseServiceName(rr.Hdr.Name); err == nil {
 						if _, ok := entries[rr.Hdr.Name]; !ok {
 							entries[rr.Hdr.Name] = NewServiceEntry(
-								instanceName,
-								"_device-info._tcp",
-								"local")
+								instance,
+								st,
+								domain)
 							entries[rr.Hdr.Name].TTL = rr.Hdr.Ttl
 							if ipv4 := msg.addr.IP.To4(); ipv4 != nil {
 								entries[rr.Hdr.Name].AddrIPv4 = ipv4
@@ -304,11 +309,11 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 					// to issue responses containing that record(rfc 6762#section-6),
 					// so the address returned by recvfrom() should be the same with
 					//  the advertised A record in a good implementation of mDNS
-					if ipv4 := msg.addr.IP.To4(); ipv4 != nil {
-						if !rr.A.Equal(msg.addr.IP) {
-							log.Printf("DEBUG: A record %v != source addr %v", rr.A, msg.addr)
-						}
-					}
+					// if ipv4 := msg.addr.IP.To4(); ipv4 != nil {
+					// 	if !rr.A.Equal(msg.addr.IP) {
+					// 		log.Printf("DEBUG: A record %v != source addr %v", rr.A, msg.addr)
+					// 	}
+					// }
 					c.setIPv4AddrCache(rr.Hdr.Name, rr.A)
 				case *dns.AAAA:
 					for k, e := range entries {
@@ -316,54 +321,24 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 							entries[k].AddrIPv6 = rr.AAAA
 						}
 					}
-					if ipv4 := msg.addr.IP.To4(); ipv4 == nil {
-						if !rr.AAAA.Equal(msg.addr.IP) {
-							log.Printf("DEBUG: AAAA record %v != source addr %v", rr.AAAA, msg.addr)
-						}
-					}
+					// if ipv4 := msg.addr.IP.To4(); ipv4 == nil {
+					// 	if !rr.AAAA.Equal(msg.addr.IP) {
+					// 		log.Printf("DEBUG: AAAA record %v != source addr %v", rr.AAAA, msg.addr)
+					// 	}
+					// }
 					c.setIPv6AddrCache(rr.Hdr.Name, rr.AAAA)
 				}
 			}
 		}
 
 		if len(entries) > 0 {
-			// we need a set/multiset here, shamelessly go doesn't provide one
-			instanceSet := make(map[string]bool)
-			hostnameSet := make(map[string]bool)
-
-			var deviceInfos []*ServiceEntry
 			for k, e := range entries {
 				if e.TTL == 0 {
 					delete(entries, k)
 					continue
 				}
-				// check if _device-info._tcp record is alone
-
-				// devices register a _device-info record when at least one service is advertised,
-				// but according to what I see in Wireshark, some iPhone/iPads sometimes advertise
-				// only a _device-info._tcp record, so we don't know who advertises it, in this scenario,
-				// try to ask a question requesting unicast responses(rfc 6762#section-5.4), then we may
-				// get the device ip
-				if e.Service == "_device-info._tcp" {
-					deviceInfos = append(deviceInfos, e)
-				} else {
-					instanceSet[e.Instance] = true
-					hostnameSet[e.HostName] = true
-				}
 
 				result <- e
-			}
-
-			for _, device := range deviceInfos {
-				if _, ok := instanceSet[device.Instance]; !ok {
-					// request unicast response
-					m := new(dns.Msg)
-					m.SetQuestion(device.ServiceInstanceName(), dns.TypeTXT)
-					m.RecursionDesired = false
-					if err := c.sendUnicastQuery(m); err != nil {
-						log.Printf("Failed to send question %s requesting unicast response", device.ServiceInstanceName())
-					}
-				}
 			}
 			// reset entries
 			entries = make(map[string]*ServiceEntry)
@@ -516,38 +491,6 @@ func (c *client) sendQuery(msg *dns.Msg) error {
 			if _, err := c.ipv6conn.WriteTo(buf, addr); err != nil {
 				log.Printf("c.ipv6conn.WriteTo error: %v", err)
 				return err
-			}
-		}
-	}
-	return nil
-}
-
-// rfc 6762#section-5.4(Questions Requesting Unicast Responses)
-func (c *client) sendUnicastQuery(msg *dns.Msg) error {
-	// set unicast-response bit
-	msg.Question[0].Qclass |= 0x8000
-	buf, err := msg.Pack()
-
-	if err != nil {
-		return err
-	}
-
-	// rfc 6762#section-6.7, query ID is only used in Legacy Unicast Responses
-	buf[0] = 0
-	buf[1] = 0
-
-	// doesn't implement #section-5.5(Direct Unicast Queries to Port 5353)
-	if c.ipv4conn != nil {
-		if _, err := c.ipv4conn.WriteTo(buf, ipv4Addr); err != nil {
-			log.Printf("c.ipv4conn.WriteTo error: %v", err)
-		}
-	}
-	if c.ipv6conn != nil {
-		addr := ipv6Addr
-		for _, scope := range c.scopeIDs {
-			addr.Zone = fmt.Sprintf("%d", scope)
-			if _, err := c.ipv6conn.WriteTo(buf, addr); err != nil {
-				log.Printf("c.ipv6conn.WriteTo error: %v", err)
 			}
 		}
 	}

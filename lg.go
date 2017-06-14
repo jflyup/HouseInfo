@@ -19,7 +19,7 @@ func discoverLG() {
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	buf := make([]byte, 1024)
 	for {
-		if n, addr, err := conn.ReadFrom(buf); err != nil && addr != nil && n > 0 {
+		if n, addr, err := conn.ReadFrom(buf); err == nil && addr != nil && n > 0 {
 			log.Printf("find lg TV from %v: %s", addr, string(buf[:n]))
 		}
 	}
