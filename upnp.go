@@ -18,6 +18,7 @@ var (
 		"urn:schemas-sony-com:service:ScalarWebAPI:1",    // sony TV
 		"urn:panasonic-com:device:p00RemoteController:1", // panasonic TV
 		"urn:roku-com:service:ecp:1",                     // roku TV
+		"urn:lge-com:service:webos-second-screen:1",      // LG TV
 
 		// common UPnP device
 		"urn:dial-multiscreen-org:device:dial:1",

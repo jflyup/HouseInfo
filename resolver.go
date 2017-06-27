@@ -269,15 +269,6 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 					// we have little interest in TXT record except _device_info._tcp
 					// pseudo service (it's a TXT record)
 
-					//if pos := strings.Index(rr.Hdr.Name, "._device-info._tcp."); pos != -1 {
-					// it's tricky to connect this TXT record with a host.
-					// Typically, the first DNS name label is the default service instance name
-					// and can contain any Unicode characters encoded in UTF-8.
-					// iPhone/iPad advertises some services(such as _apple-mobdev2._tcp, _homekit._tcp)
-					// using special instance name(for example, _apple-mobdev2._tcp uses mac+ipv6 as it,
-					// 90:72:40:ba:0b:e9\@fe80::9272:40ff:feba:be9._apple-mobdev2._tcp.local),
-					// then this TXT record chooses another instance name or use hostname as
-					// instance name. If so, things get complicated.
 					if instance, st, domain, err := parseServiceName(rr.Hdr.Name); err == nil {
 						if _, ok := entries[rr.Hdr.Name]; !ok {
 							entries[rr.Hdr.Name] = NewServiceEntry(
@@ -308,12 +299,13 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 					// Only an authoritative source for a given record is allowed
 					// to issue responses containing that record(rfc 6762#section-6),
 					// so the address returned by recvfrom() should be the same with
-					//  the advertised A record in a good implementation of mDNS
+					// the advertised A record in a good implementation of mDNS
 					// if ipv4 := msg.addr.IP.To4(); ipv4 != nil {
 					// 	if !rr.A.Equal(msg.addr.IP) {
 					// 		log.Printf("DEBUG: A record %v != source addr %v", rr.A, msg.addr)
 					// 	}
 					// }
+
 					c.setIPv4AddrCache(rr.Hdr.Name, rr.A)
 				case *dns.AAAA:
 					for k, e := range entries {

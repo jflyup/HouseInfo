@@ -64,7 +64,7 @@ func main() {
 		}
 	}()
 
-	go discoverLG()
+	go broadcastDiscovery()
 
 	go func() {
 		u, err := NewUPNP()
@@ -73,7 +73,7 @@ func main() {
 			return
 		}
 
-		time.Sleep(20 * time.Second)
+		time.Sleep(5 * time.Second)
 
 		log.Printf("------------found %d hosts-----------", len(u.hosts))
 		for k, v := range u.hosts {
@@ -104,15 +104,21 @@ func main() {
 		select {
 		case r := <-chResult:
 			if entry, ok := entries[r.ServiceInstanceName()]; !ok {
-				log.Printf("service: %s ipv4: %v ipv6: %v, port: %v, TTL: %d, TXT: %v hostname: %s",
-					r.ServiceInstanceName(), r.AddrIPv4, r.AddrIPv6, r.Port, r.TTL, r.Text, r.HostName)
+				if r.AddrIPv4 != nil {
+					log.Printf("service: %s ipv4: %v ipv6: %v, port: %v, TTL: %d, TXT: %v hostname: %s",
+						r.ServiceInstanceName(), r.AddrIPv4, r.AddrIPv6, r.Port, r.TTL, r.Text, r.HostName)
+				}
 				entries[r.ServiceInstanceName()] = r
 			} else {
 				if entry.HostName != "" {
 					// alway trust newer address because of expired cache
 					if addr := resolver.c.getIPv4AddrCache(entry.HostName); addr != nil {
-						// note that entry is a pointer, so we can modify the struct directly
-						entry.AddrIPv4 = addr
+						if entry.AddrIPv4 == nil {
+							entry.AddrIPv4 = addr
+							log.Printf("service: %s ipv4: %v ipv6: %v, port: %v, TTL: %d, TXT: %v hostname: %s",
+								r.ServiceInstanceName(), r.AddrIPv4, r.AddrIPv6, r.Port, r.TTL, r.Text, r.HostName)
+						}
+						// note that entry is a pointer to struct, so we can modify the struct directly
 					}
 					if addr := resolver.c.getIPv4AddrCache(entry.HostName); addr != nil {
 						entry.AddrIPv6 = addr

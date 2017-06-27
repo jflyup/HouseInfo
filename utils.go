@@ -12,6 +12,11 @@ var (
 		"_airplay._tcp",
 		"_googlecast._tcp",
 		"_amzn-wplay._tcp",
+		"_rc._tcp",
+		"_lg_dtv_wifirc._tcp",
+		"_gamecenter._tcp",
+		"_homekit._tcp",
+		"_apple-mobdev2._tcp",
 	}
 
 	metaQuery = "_services._dns-sd._udp."
