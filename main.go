@@ -73,8 +73,9 @@ func main() {
 			return
 		}
 
-		time.Sleep(5 * time.Second)
+		time.Sleep(20 * time.Second)
 
+		u.hostsLock.Lock()
 		log.Printf("------------found %d hosts-----------", len(u.hosts))
 		for k, v := range u.hosts {
 			log.Printf("host: %s", k)
@@ -97,6 +98,7 @@ func main() {
 			}
 			log.Printf("---------------------------------------")
 		}
+		u.hostsLock.Unlock()
 	}()
 
 	entries := make(map[string]*ServiceEntry)

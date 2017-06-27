@@ -58,7 +58,8 @@ const (
 
 // UPNP represents all UPnP services in the LAN
 type UPNP struct {
-	hosts map[string][]*device
+	hosts     map[string][]*device
+	hostsLock sync.Mutex
 }
 
 // device Description xml elements
@@ -363,6 +364,7 @@ func (u *UPNP) findDevice(st string) error {
 				}
 			}
 
+			u.hostsLock.Lock()
 			if devices, ok := u.hosts[dev.ipAddr]; ok {
 				// check dups
 				dup := false
@@ -381,6 +383,7 @@ func (u *UPNP) findDevice(st string) error {
 				u.hosts[dev.ipAddr] = append(u.hosts[dev.ipAddr], dev)
 				go dev.getDeviceDesc()
 			}
+			u.hostsLock.Unlock()
 		}
 	}
 
