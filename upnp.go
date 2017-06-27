@@ -19,6 +19,7 @@ var (
 		"urn:panasonic-com:device:p00RemoteController:1", // panasonic TV
 		"urn:roku-com:service:ecp:1",                     // roku TV
 		"urn:lge-com:service:webos-second-screen:1",      // LG TV
+		"urn:schemas-upnp-org:device:ZonePlayer:1",       // Sonos player
 
 		// common UPnP device
 		"urn:dial-multiscreen-org:device:dial:1",
@@ -110,6 +111,11 @@ func NewUPNP() (*UPNP, error) {
 }
 
 func (s *service) getActionList() error {
+	if s.SCPDURL == "" {
+		log.Printf("empty SCPD URL")
+		return nil
+	}
+
 	header := http.Header{}
 	header.Set("Host", strings.Split(strings.Split(s.urlBase, "//")[1], "/")[0])
 	header.Set("Connection", "keep-alive")
@@ -213,15 +219,9 @@ type urlBaseElem struct {
 	URL string `xml:",chardata"`
 }
 
-// func isHttpServer(host string) {
-// 	header.Set("Host", d.Host)
-// 	header.Set("Connection", "keep-alive")
-
-// 	request, _ := http.NewRequest("GET", d.location, nil)
-// 	request.Header = header
-
-// 	response, err := http.DefaultClient.Do(request)
-// }
+type yamahaService struct {
+	ServiceType string `xml:",chardata"`
+}
 
 func (d *device) tryRemoteControl() {
 	var wg sync.WaitGroup
@@ -288,6 +288,18 @@ func (d *device) getDeviceDesc() error {
 					s.urlBase = d.urlBase
 					go s.getActionList()
 				}
+			}
+
+			// Yamaha remote control service
+			if se.Name.Space == "urn:schemas-yamaha-com:device-1-0" &&
+				se.Name.Local == "X_specType" {
+				var elem yamahaService
+				if err := decoder.DecodeElement(&elem, &se); err != nil {
+					log.Printf("bad xml: %v", err)
+					return err
+				}
+				s := &service{ServiceType: elem.ServiceType}
+				d.ServiceList = append(d.ServiceList, s)
 			}
 		}
 	}
