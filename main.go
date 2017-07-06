@@ -34,7 +34,7 @@ func main() {
 	go resolver.Run(chResult)
 
 	// send every 500ms
-	ticker := time.NewTicker(time.Millisecond * 500)
+	ticker := time.NewTicker(time.Second)
 	go func() {
 		for {
 			select {
@@ -57,7 +57,7 @@ func main() {
 					if err != nil {
 						log.Println("Failed to browse:", err.Error())
 					}
-					time.Sleep(time.Millisecond * 500)
+					time.Sleep(time.Second)
 				}
 
 			}

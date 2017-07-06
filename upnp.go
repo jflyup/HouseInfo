@@ -4,7 +4,6 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/xml"
-	"github.com/gorilla/websocket"
 	"log"
 	"net"
 	"net/http"
@@ -13,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 var (
@@ -48,6 +49,8 @@ var (
 		"video",
 		"image",
 	}
+
+	awoxService = "urn:schemas-awox-com:service:X_ServiceManager:1"
 	// TODO IPv6 link-local multicast
 	upnpAddr = &net.UDPAddr{
 		IP:   net.ParseIP("239.255.255.250"),
@@ -136,6 +139,9 @@ func (s *service) getActionList() error {
 		return err
 	}
 
+	if s.ServiceType == awoxService {
+		log.Printf("DEBUG awos SCPD: %v", response)
+	}
 	decoder := xml.NewDecoder(response.Body)
 	for t, err := decoder.Token(); err == nil; t, err = decoder.Token() {
 		switch se := t.(type) {
@@ -151,6 +157,18 @@ func (s *service) getActionList() error {
 				for _, action := range al.ActionName {
 					if action == "GetProtocolInfo" {
 						go s.getProtocolInfo()
+					}
+
+					if action == "GetProperty" && s.ServiceType == awoxService {
+						go func() {
+							action := `"urn:schemas-awox-com:service:X_ServiceManager:1#GetProperty"`
+							body := `<m:GetProperty xmlns:m="urn:schemas-awox-com:service:X_ServiceManager:1"/>`
+
+							r, _ := s.perform(action, body)
+							if r != nil {
+								log.Printf("awos property: %v", r)
+							}
+						}()
 					}
 				}
 			}
@@ -256,9 +274,8 @@ func (d *device) tryRemoteControl() {
 			if port == 1926 {
 				// Philips
 				tr := &http.Transport{
-					TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-				}
-				client := &http.Client{Transport: tr}
+					TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
+				client := &http.Client{Transport: tr, Timeout: time.Duration(3 * time.Second)}
 				url := "https://" + d.ipAddr + ":" + strconv.Itoa(port) + "/6/audio/volume"
 				// I know it need auth info, just test it
 				resp, _ := client.Get(url)
@@ -272,7 +289,10 @@ func (d *device) tryRemoteControl() {
 
 			if port == 1925 {
 				url := "http://" + d.ipAddr + ":" + strconv.Itoa(port) + "/1/system/model"
-				resp, _ := http.Get(url)
+				client := http.Client{
+					Timeout: time.Duration(3 * time.Second),
+				}
+				resp, _ := client.Get(url)
 				if resp != nil {
 					log.Printf("1925 response: %v", resp)
 					d.mu.Lock()
@@ -287,15 +307,22 @@ func (d *device) tryRemoteControl() {
 				<command><session>12345678</session><type>HandleKeyInput</type><value>10</value></command>`
 				url1 := "http://" + d.ipAddr + ":" + strconv.Itoa(port) + "/hdcp/api/dtv_wifirc"
 				url2 := "http://" + d.ipAddr + ":" + strconv.Itoa(port) + "/roap/api/command"
-				resp, _ := http.Post(url1, "application/atom+xml", strings.NewReader(body))
+				client := http.Client{
+					Timeout: time.Duration(3 * time.Second),
+				}
+				resp, _ := client.Post(url1, "application/atom+xml", strings.NewReader(body))
 				if resp != nil {
 					log.Printf("lg test hdcp: %v", resp)
 					d.mu.Lock()
 					d.openPorts = append(d.openPorts, port)
 					d.mu.Unlock()
+				}
+
+				if resp.StatusCode < 300 {
 					return
 				}
-				resp, _ = http.Post(url2, "application/atom+xml", strings.NewReader(body))
+
+				resp, _ = client.Post(url2, "application/atom+xml", strings.NewReader(body))
 				if resp != nil {
 					log.Printf("lg test roap: %v", resp)
 					d.mu.Lock()
