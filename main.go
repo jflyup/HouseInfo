@@ -73,7 +73,7 @@ func main() {
 			return
 		}
 
-		time.Sleep(20 * time.Second)
+		time.Sleep(30 * time.Second)
 
 		u.hostsLock.Lock()
 		log.Printf("------------found %d hosts-----------", len(u.hosts))

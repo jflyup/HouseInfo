@@ -1,10 +1,14 @@
 package main
 
 import (
+	"crypto/tls"
+	"encoding/base64"
 	"encoding/xml"
+	"github.com/gorilla/websocket"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -232,11 +236,72 @@ func (d *device) tryRemoteControl() {
 		// concurrency everywhere
 		go func(port int) {
 			defer wg.Done()
-			if conn, err := net.DialTimeout("tcp", d.ipAddr+":"+strconv.Itoa(port), time.Second*3); err == nil && conn != nil {
-				d.mu.Lock()
-				d.openPorts = append(d.openPorts, port)
-				d.mu.Unlock()
-				conn.Close()
+			if port == 8001 {
+				// try websocket
+				u := url.URL{Scheme: "ws", Host: d.ipAddr + ":" + strconv.Itoa(port),
+					Path: "/api/v2/channels/samsung.remote.control?name=" +
+						base64.StdEncoding.EncodeToString([]byte("samsungctl"))}
+				c, resp, _ := websocket.DefaultDialer.Dial(u.String(), nil)
+				if resp != nil {
+					log.Printf("websocket response: %v", resp)
+					d.mu.Lock()
+					d.openPorts = append(d.openPorts, port)
+					d.mu.Unlock()
+				}
+				if c != nil {
+					c.Close()
+				}
+			}
+
+			if port == 1926 {
+				// Philips
+				tr := &http.Transport{
+					TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+				}
+				client := &http.Client{Transport: tr}
+				url := "https://" + d.ipAddr + ":" + strconv.Itoa(port) + "/6/audio/volume"
+				// I know it need auth info, just test it
+				resp, _ := client.Get(url)
+				if resp != nil {
+					log.Printf("1926 response: %v", resp)
+					d.mu.Lock()
+					d.openPorts = append(d.openPorts, port)
+					d.mu.Unlock()
+				}
+			}
+
+			if port == 1925 {
+				url := "http://" + d.ipAddr + ":" + strconv.Itoa(port) + "/1/system/model"
+				resp, _ := http.Get(url)
+				if resp != nil {
+					log.Printf("1925 response: %v", resp)
+					d.mu.Lock()
+					d.openPorts = append(d.openPorts, port)
+					d.mu.Unlock()
+				}
+			}
+
+			if port == 8080 {
+				// LG
+				body := `<?xml version="1.0" encoding="utf-8"?>
+				<command><session>12345678</session><type>HandleKeyInput</type><value>10</value></command>`
+				url1 := "http://" + d.ipAddr + ":" + strconv.Itoa(port) + "/hdcp/api/dtv_wifirc"
+				url2 := "http://" + d.ipAddr + ":" + strconv.Itoa(port) + "/roap/api/command"
+				resp, _ := http.Post(url1, "application/atom+xml", strings.NewReader(body))
+				if resp != nil {
+					log.Printf("lg test hdcp: %v", resp)
+					d.mu.Lock()
+					d.openPorts = append(d.openPorts, port)
+					d.mu.Unlock()
+					return
+				}
+				resp, _ = http.Post(url2, "application/atom+xml", strings.NewReader(body))
+				if resp != nil {
+					log.Printf("lg test roap: %v", resp)
+					d.mu.Lock()
+					d.openPorts = append(d.openPorts, port)
+					d.mu.Unlock()
+				}
 			}
 		}(port)
 	}
