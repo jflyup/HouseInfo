@@ -318,7 +318,7 @@ func (d *device) tryRemoteControl() {
 					d.mu.Unlock()
 				}
 
-				if resp.StatusCode < 300 {
+				if resp != nil && resp.StatusCode < 300 {
 					return
 				}
 
