@@ -42,6 +42,7 @@ var (
 		55000, // Samsung, Panasonic
 		8080,  // LG
 		10002, // Sharp
+		905,   // Sharp
 	}
 
 	mediaTypes = []string{
@@ -295,6 +296,15 @@ func (d *device) tryRemoteControl() {
 				resp, _ := client.Get(url)
 				if resp != nil {
 					log.Printf("1925 response: %v", resp)
+					d.mu.Lock()
+					d.openPorts = append(d.openPorts, port)
+					d.mu.Unlock()
+				}
+			}
+
+			if port == 10002 || port == 905 {
+				conn, err := net.Dial("tcp", d.ipAddr+":"+strconv.Itoa(port))
+				if err == nil && conn != nil {
 					d.mu.Lock()
 					d.openPorts = append(d.openPorts, port)
 					d.mu.Unlock()
