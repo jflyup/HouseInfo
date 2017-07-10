@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"strconv"
 	"strings"
@@ -141,7 +142,8 @@ func (s *service) getActionList() error {
 	}
 
 	if s.ServiceType == awoxService {
-		log.Printf("DEBUG awos SCPD: %v", response)
+		r, _ := httputil.DumpResponse(response, true)
+		log.Printf("DEBUG awos SCPD: %v", string(r))
 	}
 	decoder := xml.NewDecoder(response.Body)
 	for t, err := decoder.Token(); err == nil; t, err = decoder.Token() {
@@ -262,7 +264,7 @@ func (d *device) tryRemoteControl() {
 						base64.StdEncoding.EncodeToString([]byte("samsungctl"))}
 				c, resp, _ := websocket.DefaultDialer.Dial(u.String(), nil)
 				if resp != nil {
-					log.Printf("websocket response: %v", resp)
+					log.Printf("websocket response: %v", resp.StatusCode)
 					d.mu.Lock()
 					d.openPorts = append(d.openPorts, port)
 					d.mu.Unlock()
@@ -281,7 +283,11 @@ func (d *device) tryRemoteControl() {
 				// I know it need auth info, just test it
 				resp, _ := client.Get(url)
 				if resp != nil {
-					log.Printf("1926 response: %v", resp)
+					r, err := httputil.DumpResponse(resp, true)
+					if err != nil {
+						log.Printf("dump error: %v", err)
+					}
+					log.Printf("ip: %s, 1926 response code: %d %s", d.ipAddr, resp.StatusCode, string(r))
 					d.mu.Lock()
 					d.openPorts = append(d.openPorts, port)
 					d.mu.Unlock()
@@ -289,13 +295,17 @@ func (d *device) tryRemoteControl() {
 			}
 
 			if port == 1925 {
-				url := "http://" + d.ipAddr + ":" + strconv.Itoa(port) + "/1/system/model"
+				url := "http://" + d.ipAddr + ":" + strconv.Itoa(port)
 				client := http.Client{
 					Timeout: time.Duration(3 * time.Second),
 				}
 				resp, _ := client.Get(url)
 				if resp != nil {
-					log.Printf("1925 response: %v", resp)
+					r, err := httputil.DumpResponse(resp, true)
+					if err != nil {
+						log.Printf("dump error: %v", err)
+					}
+					log.Printf("ip: %s, 1925 response: %d", d.ipAdd, resp.StatusCode, string(r))
 					d.mu.Lock()
 					d.openPorts = append(d.openPorts, port)
 					d.mu.Unlock()
@@ -322,19 +332,15 @@ func (d *device) tryRemoteControl() {
 				}
 				resp, _ := client.Post(url1, "application/atom+xml", strings.NewReader(body))
 				if resp != nil {
-					log.Printf("lg test hdcp: %v", resp)
+					log.Printf("ip: %s, lg test hdcp: %v", d.ipAdd, resp.StatusCode)
 					d.mu.Lock()
 					d.openPorts = append(d.openPorts, port)
 					d.mu.Unlock()
 				}
 
-				if resp != nil && resp.StatusCode < 300 {
-					return
-				}
-
 				resp, _ = client.Post(url2, "application/atom+xml", strings.NewReader(body))
 				if resp != nil {
-					log.Printf("lg test roap: %v", resp)
+					log.Printf("ip: %s, lg test roap: %v", d.ipAdd, resp.StatusCode)
 					d.mu.Lock()
 					d.openPorts = append(d.openPorts, port)
 					d.mu.Unlock()

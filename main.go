@@ -64,8 +64,6 @@ func main() {
 		}
 	}()
 
-	go broadcastDiscovery()
-
 	go func() {
 		u, err := NewUPNP()
 		if err != nil {
