@@ -305,7 +305,7 @@ func (d *device) tryRemoteControl() {
 					if err != nil {
 						log.Printf("dump error: %v", err)
 					}
-					log.Printf("ip: %s, 1925 response: %d", d.ipAdd, resp.StatusCode, string(r))
+					log.Printf("ip: %s, 1925 response: %d, %s", d.ipAddr, resp.StatusCode, string(r))
 					d.mu.Lock()
 					d.openPorts = append(d.openPorts, port)
 					d.mu.Unlock()
@@ -332,7 +332,11 @@ func (d *device) tryRemoteControl() {
 				}
 				resp, _ := client.Post(url1, "application/atom+xml", strings.NewReader(body))
 				if resp != nil {
-					log.Printf("ip: %s, lg test hdcp: %v", d.ipAdd, resp.StatusCode)
+					r, err := httputil.DumpResponse(resp, true)
+					if err != nil {
+						log.Printf("dump error: %v", err)
+					}
+					log.Printf("ip: %s, lg test hdcp: %v, %s", d.ipAddr, resp.StatusCode, string(r))
 					d.mu.Lock()
 					d.openPorts = append(d.openPorts, port)
 					d.mu.Unlock()
@@ -340,7 +344,11 @@ func (d *device) tryRemoteControl() {
 
 				resp, _ = client.Post(url2, "application/atom+xml", strings.NewReader(body))
 				if resp != nil {
-					log.Printf("ip: %s, lg test roap: %v", d.ipAdd, resp.StatusCode)
+					r, err := httputil.DumpResponse(resp, true)
+					if err != nil {
+						log.Printf("dump error: %v", err)
+					}
+					log.Printf("ip: %s, lg test roap: %v, %s", d.ipAddr, resp.StatusCode, string(r))
 					d.mu.Lock()
 					d.openPorts = append(d.openPorts, port)
 					d.mu.Unlock()
