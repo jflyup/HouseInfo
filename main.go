@@ -138,6 +138,7 @@ func main() {
 								r.ServiceInstanceName(), r.AddrIPv4, r.AddrIPv6, r.Port, r.TTL, r.Text, r.HostName)
 							if _, ok := hosts[addr.String()]; !ok {
 								if mac := sendARP(addr); mac != nil {
+									hosts[addr.String()] = mac
 									log.Printf("IP %s is at %v", addr, mac)
 								}
 							}
