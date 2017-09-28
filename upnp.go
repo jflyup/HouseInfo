@@ -1,58 +1,18 @@
 package main
 
 import (
-	"crypto/tls"
-	"encoding/base64"
 	"encoding/xml"
+	"errors"
 	"log"
 	"net"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/gorilla/websocket"
 )
 
 var (
-	deviceTypes = []string{
-		"urn:samsung.com:device:RemoteControlReceiver:1", // samsung TV
-		"urn:schemas-sony-com:service:IRCC:1",            // sony TV
-		"urn:schemas-sony-com:service:ScalarWebAPI:1",    // sony TV
-		"urn:panasonic-com:device:p00RemoteController:1", // panasonic TV
-		"urn:roku-com:service:ecp:1",                     // roku TV
-		"urn:lge-com:service:webos-second-screen:1",      // LG TV
-		"urn:schemas-upnp-org:device:ZonePlayer:1",       // Sonos player
-
-		// common UPnP device
-		"urn:dial-multiscreen-org:device:dial:1",
-		"urn:dial-multiscreen-org:device:dialreceiver:1",
-		"urn:schemas-upnp-org:device:MediaRenderer:1",
-		"urn:schemas-upnp-org:device:MediaServer:1",
-		"urn:schemas-upnp-org:device:Basic:1",
-		"urn:schemas-upnp-org:device:tvdevice:1",
-	}
-	remoteControlPorts = []int{
-		80,         // Sony
-		8060,       // Roku
-		1925, 1926, // Philips
-		8001,  // Samsung websocket
-		55000, // Samsung, Panasonic
-		8080,  // LG
-		10002, // Sharp
-		905,   // Sharp
-	}
-
-	mediaTypes = []string{
-		"audio",
-		"video",
-		"image",
-	}
-
-	awoxService = "urn:schemas-awox-com:service:X_ServiceManager:1"
 	// TODO IPv6 link-local multicast
 	upnpAddr = &net.UDPAddr{
 		IP:   net.ParseIP("239.255.255.250"),
@@ -76,11 +36,8 @@ type service struct {
 	urlBase     string
 	ServiceType string `xml:"serviceType"`
 	//ServiceId   string `xml:"serviceId"`
-	SCPDURL     string `xml:"SCPDURL"`
-	ControlURL  string `xml:"controlURL"`
-	actions     []string
-	sourceProto []string
-	sinkProto   []string
+	SCPDURL    string `xml:"SCPDURL"`
+	ControlURL string `xml:"controlURL"`
 	//EventSubURL string `xml:"eventSubURL"`
 }
 
@@ -101,9 +58,8 @@ type device struct {
 	location         string
 	ST               string
 	ipAddr           string
-	openPorts        []int
-	mu               sync.Mutex
 	ServiceList      []*service `xml:"serviceList>service"`
+	DeviceList       []*device  `xml:"deviceList>device"`
 }
 
 // NewUPNP returns a new UPNP object with a populated device object.
@@ -112,72 +68,10 @@ func NewUPNP() (*UPNP, error) {
 		hosts: make(map[string][]*device),
 	}
 
-	for _, st := range deviceTypes {
-		go u.findDevice(st)
-		time.Sleep(time.Millisecond * 100)
-	}
+	go u.findDevice("ssdp:all")
+	time.Sleep(time.Millisecond * 1000)
 
 	return u, nil
-}
-
-func (s *service) getActionList() error {
-	if s.SCPDURL == "" {
-		log.Printf("empty SCPD URL")
-		return nil
-	}
-
-	header := http.Header{}
-	header.Set("Host", strings.Split(strings.Split(s.urlBase, "//")[1], "/")[0])
-	header.Set("Connection", "keep-alive")
-
-	// different implementations return SCPDURL with "/" or not
-	request, _ := http.NewRequest("GET", s.urlBase+strings.TrimPrefix(s.SCPDURL, "/"), nil)
-	request.Header = header
-
-	response, err := http.DefaultClient.Do(request)
-
-	if response == nil || err != nil || response.StatusCode != 200 {
-		log.Printf("can't get SCPD xml: %v, url: %s", err, s.SCPDURL)
-		return err
-	}
-
-	if s.ServiceType == awoxService {
-		r, _ := httputil.DumpResponse(response, true)
-		log.Printf("DEBUG awos SCPD: %v", string(r))
-	}
-	decoder := xml.NewDecoder(response.Body)
-	for t, err := decoder.Token(); err == nil; t, err = decoder.Token() {
-		switch se := t.(type) {
-		case xml.StartElement:
-			if se.Name.Local == "actionList" {
-				var al actionList
-				if err := decoder.DecodeElement(&al, &se); err != nil {
-					log.Printf("bad xml: %v", err)
-					return err
-				}
-
-				s.actions = al.ActionName
-				for _, action := range al.ActionName {
-					if action == "GetProtocolInfo" {
-						go s.getProtocolInfo()
-					}
-
-					if action == "GetProperty" && s.ServiceType == awoxService {
-						go func() {
-							action := `"urn:schemas-awox-com:service:X_ServiceManager:1#GetProperty"`
-							body := `<m:GetProperty xmlns:m="urn:schemas-awox-com:service:X_ServiceManager:1"/>`
-
-							r, _ := s.perform(action, body)
-							if r != nil {
-								log.Printf("awos property: %v", r)
-							}
-						}()
-					}
-				}
-			}
-		}
-	}
-	return nil
 }
 
 // perform the requested upnp action
@@ -203,40 +97,83 @@ func (s *service) perform(action, body string) (*http.Response, error) {
 	return resp, err
 }
 
-type protocolInfoResp struct {
-	Source string `xml:"Source"`
-	Sink   string `xml:"Sink"`
-}
-
-func (s *service) getProtocolInfo() {
-	action := `"urn:schemas-upnp-org:service:ConnectionManager:1#GetProtocolInfo"`
-	body := `<m:GetProtocolInfo xmlns:m="urn:schemas-upnp-org:service:ConnectionManager:1"/>`
+func (s *service) externalIPAddress() (net.IP, error) {
+	action := `"urn:schemas-upnp-org:service:WANIPConnection:1#GetExternalIPAddress"`
+	body := `<m:GetExternalIPAddress xmlns:m="urn:schemas-upnp-org:service:WANIPConnection:1"/>`
 
 	r, err := s.perform(action, body)
 	if r.StatusCode != 200 || err != nil {
-		log.Printf("getProtocolInfo failed: %v, %v, control url: %s", err, r.StatusCode, s.urlBase+strings.TrimPrefix(s.ControlURL, "/"))
-		return
+		return nil, err
 	}
 
 	decoder := xml.NewDecoder(r.Body)
+	found := false
 	for t, err := decoder.Token(); err == nil; t, err = decoder.Token() {
 		switch se := t.(type) {
 		case xml.StartElement:
-			if se.Name.Local == "GetProtocolInfoResponse" {
-				var elem protocolInfoResp
-				if err := decoder.DecodeElement(&elem, &se); err != nil {
-					return
-				}
+			found = (se.Name.Local == "NewExternalIPAddress")
+		case xml.CharData:
+			if found {
+				ip := net.ParseIP(string(se))
+				return ip, nil
+			}
+		}
+	}
 
-				for _, mediaType := range mediaTypes {
-					if strings.Contains(elem.Source, mediaType) {
-						s.sourceProto = append(s.sourceProto, mediaType)
-					}
-					if strings.Contains(elem.Sink, mediaType) {
-						s.sinkProto = append(s.sinkProto, mediaType)
+	return nil, errors.New("upnp: could not get public ip from gateway")
+}
+
+type portMappingEntry struct {
+	NewRemoteHost             string `xml:"NewRemoteHost"`
+	NewExternalPort           string `xml:"NewExternalPort"`
+	NewProtocol               string `xml:"NewProtocol"`
+	NewInternalPort           string `xml:"NewInternalPort"`
+	NewInternalClient         string `xml:"NewInternalClient"`
+	NewEnabled                string `xml:"NewEnabled"`
+	NewPortMappingDescription string `xml:"NewPortMappingDescription"`
+	NewLeaseDuration          string `xml:"NewLeaseDuration"`
+}
+
+func (s *service) getPortMapping() {
+	action := `"urn:schemas-upnp-org:service:WANIPConnection:1#GetGenericPortMappingEntry"`
+	i := 0
+	for {
+		body := `<m:GetGenericPortMappingEntry xmlns:m="urn:schemas-upnp-org:service:WANIPConnection:1">
+	<NewPortMappingIndex>` + strconv.Itoa(i) + `</NewPortMappingIndex> </m:GetGenericPortMappingEntry>`
+		i++
+		r, err := s.perform(action, body)
+		if err != nil || r == nil {
+			log.Println(err)
+			break
+		}
+		if r.StatusCode != 200 {
+			break
+		}
+		decoder := xml.NewDecoder(r.Body)
+		fault := false
+		for t, err := decoder.Token(); err == nil; t, err = decoder.Token() {
+			if fault {
+				break
+			}
+			switch se := t.(type) {
+			case xml.StartElement:
+				if se.Name.Local == "Fault" {
+					fault = true
+					break
+				} else if se.Name.Local == "GetGenericPortMappingEntryResponse" {
+					var entry portMappingEntry
+					if err := decoder.DecodeElement(&entry, &se); err != nil {
+						break
+					} else {
+						log.Printf("port mapping entry: %v", entry)
 					}
 				}
 			}
+
+		}
+
+		if fault {
+			break
 		}
 	}
 }
@@ -245,126 +182,12 @@ type urlBaseElem struct {
 	URL string `xml:",chardata"`
 }
 
-type yamahaService struct {
-	ServiceType string `xml:",chardata"`
-}
-
-func (d *device) tryRemoteControl() {
-	var wg sync.WaitGroup
-	wg.Add(len(remoteControlPorts))
-
-	for _, port := range remoteControlPorts {
-		// concurrency everywhere
-		go func(port int) {
-			defer wg.Done()
-			if port == 8001 {
-				// try websocket
-				u := url.URL{Scheme: "ws", Host: d.ipAddr + ":" + strconv.Itoa(port),
-					Path: "/api/v2/channels/samsung.remote.control?name=" +
-						base64.StdEncoding.EncodeToString([]byte("samsungctl"))}
-				c, resp, _ := websocket.DefaultDialer.Dial(u.String(), nil)
-				if resp != nil {
-					log.Printf("websocket response: %v", resp.StatusCode)
-					d.mu.Lock()
-					d.openPorts = append(d.openPorts, port)
-					d.mu.Unlock()
-				}
-				if c != nil {
-					c.Close()
-				}
-			}
-
-			if port == 1926 {
-				// Philips
-				tr := &http.Transport{
-					TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
-				client := &http.Client{Transport: tr, Timeout: time.Duration(3 * time.Second)}
-				url := "https://" + d.ipAddr + ":" + strconv.Itoa(port) + "/6/audio/volume"
-				// I know it need auth info, just test it
-				resp, _ := client.Get(url)
-				if resp != nil {
-					r, err := httputil.DumpResponse(resp, true)
-					if err != nil {
-						log.Printf("dump error: %v", err)
-					}
-					log.Printf("ip: %s, 1926 response code: %d %s", d.ipAddr, resp.StatusCode, string(r))
-					d.mu.Lock()
-					d.openPorts = append(d.openPorts, port)
-					d.mu.Unlock()
-				}
-			}
-
-			if port == 1925 {
-				url := "http://" + d.ipAddr + ":" + strconv.Itoa(port)
-				client := http.Client{
-					Timeout: time.Duration(3 * time.Second),
-				}
-				resp, _ := client.Get(url)
-				if resp != nil {
-					r, err := httputil.DumpResponse(resp, true)
-					if err != nil {
-						log.Printf("dump error: %v", err)
-					}
-					log.Printf("ip: %s, 1925 response: %d, %s", d.ipAddr, resp.StatusCode, string(r))
-					d.mu.Lock()
-					d.openPorts = append(d.openPorts, port)
-					d.mu.Unlock()
-				}
-			}
-
-			if port == 10002 || port == 905 {
-				conn, err := net.Dial("tcp", d.ipAddr+":"+strconv.Itoa(port))
-				if err == nil && conn != nil {
-					d.mu.Lock()
-					d.openPorts = append(d.openPorts, port)
-					d.mu.Unlock()
-				}
-			}
-
-			if port == 8080 {
-				// LG
-				body := `<?xml version="1.0" encoding="utf-8"?>
-				<command><session>12345678</session><type>HandleKeyInput</type><value>10</value></command>`
-				url1 := "http://" + d.ipAddr + ":" + strconv.Itoa(port) + "/hdcp/api/dtv_wifirc"
-				url2 := "http://" + d.ipAddr + ":" + strconv.Itoa(port) + "/roap/api/command"
-				client := http.Client{
-					Timeout: time.Duration(3 * time.Second),
-				}
-				resp, _ := client.Post(url1, "application/atom+xml", strings.NewReader(body))
-				if resp != nil {
-					r, err := httputil.DumpResponse(resp, true)
-					if err != nil {
-						log.Printf("dump error: %v", err)
-					}
-					log.Printf("ip: %s, lg test hdcp: %v, %s", d.ipAddr, resp.StatusCode, string(r))
-					d.mu.Lock()
-					d.openPorts = append(d.openPorts, port)
-					d.mu.Unlock()
-				}
-
-				resp, _ = client.Post(url2, "application/atom+xml", strings.NewReader(body))
-				if resp != nil {
-					r, err := httputil.DumpResponse(resp, true)
-					if err != nil {
-						log.Printf("dump error: %v", err)
-					}
-					log.Printf("ip: %s, lg test roap: %v, %s", d.ipAddr, resp.StatusCode, string(r))
-					d.mu.Lock()
-					d.openPorts = append(d.openPorts, port)
-					d.mu.Unlock()
-				}
-			}
-		}(port)
-	}
-
-	wg.Wait()
-}
-
 func (d *device) getDeviceDesc() error {
 	header := http.Header{}
 	header.Set("Host", d.Host)
 	header.Set("Connection", "keep-alive")
 
+	log.Printf("downloading from %s", d.location)
 	request, _ := http.NewRequest("GET", d.location, nil)
 	request.Header = header
 
@@ -401,27 +224,33 @@ func (d *device) getDeviceDesc() error {
 					return err
 				}
 
-				for _, s := range d.ServiceList {
-					s.urlBase = d.urlBase
-					go s.getActionList()
-				}
+				log.Printf("url base: %s", d.urlBase)
+				go iterateDevice(d)
 			}
 
-			// Yamaha remote control service
-			if se.Name.Space == "urn:schemas-yamaha-com:device-1-0" &&
-				se.Name.Local == "X_specType" {
-				var elem yamahaService
-				if err := decoder.DecodeElement(&elem, &se); err != nil {
-					log.Printf("bad xml: %v", err)
-					return err
-				}
-				s := &service{ServiceType: elem.ServiceType}
-				d.ServiceList = append(d.ServiceList, s)
-			}
 		}
 	}
 
 	return nil
+}
+
+func iterateDevice(d *device) {
+	if len(d.DeviceList) > 0 {
+		for _, item := range d.DeviceList {
+			item.urlBase = d.urlBase
+			iterateDevice(item)
+			for _, s := range item.ServiceList {
+				if s.ServiceType == "urn:schemas-upnp-org:service:WANIPConnection:1" {
+					s.urlBase = item.urlBase
+					s.getPortMapping()
+					if ip, err := s.externalIPAddress(); err == nil {
+						log.Printf("external ip: %s", ip.String())
+					}
+					break
+				}
+			}
+		}
+	}
 }
 
 func (u *UPNP) findDevice(st string) error {
@@ -441,9 +270,10 @@ func (u *UPNP) findDevice(st string) error {
 	}
 	defer conn.Close()
 
+	locationSet := make(map[string]bool)
+
 	buf := make([]byte, 10240)
 	for i := 0; i < multicastRetryCount; i++ {
-		// write multiple times?
 		_, err = conn.WriteToUDP([]byte(search), upnpAddr)
 		if err != nil {
 			return err
@@ -480,26 +310,21 @@ func (u *UPNP) findDevice(st string) error {
 				}
 			}
 
-			u.hostsLock.Lock()
-			if devices, ok := u.hosts[dev.ipAddr]; ok {
-				// check dups
-				dup := false
-				for _, d := range devices {
-					if d.ST == dev.ST {
-						dup = true
-						break
+			if !strings.HasPrefix(dev.ST, "uuid") {
+				u.hostsLock.Lock()
+				if devices, ok := u.hosts[dev.ipAddr]; ok {
+					if _, ok := locationSet[dev.location]; !ok {
+						locationSet[dev.location] = true
+						u.hosts[dev.ipAddr] = append(devices, dev)
+						go dev.getDeviceDesc()
 					}
-				}
-				if !dup {
-					u.hosts[dev.ipAddr] = append(devices, dev)
+				} else {
+					u.hosts[dev.ipAddr] = append(u.hosts[dev.ipAddr], dev)
+					locationSet[dev.location] = true
 					go dev.getDeviceDesc()
 				}
-			} else {
-				go dev.tryRemoteControl()
-				u.hosts[dev.ipAddr] = append(u.hosts[dev.ipAddr], dev)
-				go dev.getDeviceDesc()
+				u.hostsLock.Unlock()
 			}
-			u.hostsLock.Unlock()
 		}
 	}
 

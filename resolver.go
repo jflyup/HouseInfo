@@ -6,7 +6,6 @@ import (
 	"net"
 	"strings"
 	"sync"
-	"sync/atomic"
 
 	"github.com/miekg/dns"
 	"golang.org/x/net/ipv4"
@@ -84,8 +83,6 @@ type client struct {
 	ipv6Lock      sync.Mutex
 	ipv4AddrCache map[string]net.IP
 	ipv6AddrCache map[string]net.IP
-	ipv4MsgCount  uint32
-	ipv6MsgCount  uint32
 }
 
 // Client structure constructor
@@ -95,8 +92,17 @@ func newClient(iface *net.Interface) (*client, error) {
 	// MUST silently ignore any Multicast DNS responses they receive where
 	// the source UDP port is not 5353.
 
-	// TODO we should check if we can use udp port 5353 exclusively(it's not so convenient in go),
+	// TODO we should check if we can use udp port 5353 exclusively(it's not easy in go),
 	// only if yes, we can receive unicast response(rfc 6762#section-15.1)
+
+	// the implement of ListenUDP provide a socket
+	// that listens to a wildcard address with
+	// reusable UDP port when the given laddr
+	// is an appropriate UDP multicast address prefix.
+	// This makes it possible for a single UDP listener to
+	// join multiple different group addresses, for
+	// multiple UDP listeners that listen on the same UDP
+	// port to join the same group address.
 	ipv4conn, err := net.ListenUDP("udp4", mdnsWildcardAddrIPv4)
 	if err != nil {
 		log.Printf("Failed to bind to udp4 port: %v", err)
@@ -109,7 +115,7 @@ func newClient(iface *net.Interface) (*client, error) {
 		return nil, fmt.Errorf("failed to bind to any udp port")
 	}
 
-	// Join multicast groups to receive announcements from server
+	// Join multicast groups
 	p1 := ipv4.NewPacketConn(ipv4conn)
 	p2 := ipv6.NewPacketConn(ipv6conn)
 	var scopeIDs []int
@@ -194,7 +200,7 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 	if c.ipv6conn != nil {
 		go c.recv(c.ipv6conn, msgCh)
 	}
-	ptrEntries := make(map[string]int)
+	resolvedEntries := make(map[string]int)
 
 	// Iterate through channels from listeners goroutines
 	var entries map[string]*ServiceEntry
@@ -223,16 +229,15 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 							log.Printf("Failed to query service type %s", rr.Ptr)
 						}
 					} else if strings.HasSuffix(rr.Ptr, rr.Hdr.Name) {
-						// service instance
-						if _, ok := ptrEntries[rr.Ptr]; !ok {
-							//log.Printf("Ptr: %+v", rr)
-							ptrEntries[rr.Ptr] = 1
-						}
-						m := new(dns.Msg)
-						m.SetQuestion(rr.Ptr, dns.TypeANY)
-						m.RecursionDesired = false
-						if err := c.sendQuery(m); err != nil {
-							log.Printf("Failed to query instance %s", rr.Ptr)
+						if _, ok := resolvedEntries[rr.Ptr]; !ok {
+							resolvedEntries[rr.Ptr] = 1
+							// resolve instace
+							m := new(dns.Msg)
+							m.SetQuestion(rr.Ptr, dns.TypeANY)
+							m.RecursionDesired = false
+							if err := c.sendQuery(m); err != nil {
+								log.Printf("Failed to query instance %s", rr.Ptr)
+							}
 						}
 					} else if strings.Contains(rr.Hdr.Name, ".in-addr.arpa") {
 						// always trust newer address
@@ -266,9 +271,7 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 						log.Printf("illegal service instance: %s", rr.Hdr.Name)
 					}
 				case *dns.TXT:
-					// we have little interest in TXT record except _device_info._tcp
-					// pseudo service (it's a TXT record)
-
+					// regard _device_info._tcp as a service (it's a TXT record)
 					if instance, st, domain, err := parseServiceName(rr.Hdr.Name); err == nil {
 						if _, ok := entries[rr.Hdr.Name]; !ok {
 							entries[rr.Hdr.Name] = NewServiceEntry(
@@ -286,6 +289,8 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 						entries[rr.Hdr.Name].Text = rr.Txt
 					}
 					// type NSEC, not used.
+				case *dns.HINFO:
+					log.Printf("got HINFO: %v from %v", rr, msg.addr)
 				case *dns.A:
 					for k, e := range entries {
 						if e.HostName == rr.Hdr.Name {
@@ -412,12 +417,6 @@ func (c *client) recv(l *net.UDPConn, msgCh chan recvedMsg) {
 			continue
 		}
 
-		// statistics of ipv4/ipv6 packets
-		if strings.Contains(raddr.String(), "%") {
-			atomic.AddUint32(&c.ipv6MsgCount, 1)
-		} else {
-			atomic.AddUint32(&c.ipv4MsgCount, 1)
-		}
 		select {
 		case msgCh <- recvedMsg{addr: udpAddr, mDNSMsg: mDNSMsg}:
 		case <-c.closedCh:

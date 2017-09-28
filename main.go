@@ -5,8 +5,36 @@ import (
 	"os"
 
 	"flag"
+	"net"
 	"time"
 )
+
+// var (
+// 	iphlp, _ = windows.LoadDLL("iphlpapi.dll")
+// 	// SendARP is Windows API
+// 	SendARP, _ = windows.FindProc(iphlp, "SendARP")
+// )
+
+// func sendARP(dst net.IP) {
+// 	var nargs uintptr = 4
+// 	var len uint64 = 6
+// 	mac := []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+// 	d := binary.BigEndian.Uint32(dst.To4())
+
+// 	// SendARP will send 3 ARP requests if no reply received on Windows 7
+// 	ret, _, callErr := syscall.Syscall6(
+// 		uintptr(SendARP), nargs,
+// 		uintptr(d),
+// 		0,
+// 		uintptr(unsafe.Pointer(&mac[0])),
+// 		uintptr(unsafe.Pointer(&len)),
+// 		0,
+// 		0)
+
+// 	if callErr == 0 && ret == 0 {
+// 		fmt.Printf("mac: %x up\n", mac)
+// 	}
+// }
 
 func main() {
 	var logFile = flag.String("o", "", "output file")
@@ -23,6 +51,8 @@ func main() {
 
 	log.Printf("start scanning:")
 
+	hosts := arpsweep()
+
 	resolver, err := NewResolver(nil)
 
 	if err != nil {
@@ -33,7 +63,7 @@ func main() {
 	chResult := make(chan *ServiceEntry)
 	go resolver.Run(chResult)
 
-	// send every 500ms
+	// send every 1s
 	ticker := time.NewTicker(time.Second)
 	go func() {
 		for {
@@ -47,50 +77,28 @@ func main() {
 		}
 	}()
 
-	t := time.NewTicker(time.Second)
-	go func() {
-		for {
-			select {
-			case <-t.C:
-				for _, s := range tvServices {
-					err = resolver.Browse(s, "local", chResult)
-					if err != nil {
-						log.Println("Failed to browse:", err.Error())
-					}
-					time.Sleep(time.Second)
-				}
-
-			}
-		}
-	}()
-
 	go func() {
 		u, err := NewUPNP()
 		if err != nil {
-			log.Printf("failed to discover UPnP devices")
+			log.Printf("failed to init UPnP discovery")
 			return
 		}
 
-		time.Sleep(30 * time.Second)
+		time.Sleep(10 * time.Second)
 
 		u.hostsLock.Lock()
-		log.Printf("------------found %d hosts-----------", len(u.hosts))
+		log.Printf("------------found %d UPnP enabled hosts-----------", len(u.hosts))
 		for k, v := range u.hosts {
 			log.Printf("host: %s", k)
 			for _, d := range v {
-				log.Printf("device type: %s", d.ST)
+				log.Printf("device type: %s", d.DeviceType)
 				log.Printf("url base: %s", d.urlBase)
-				log.Printf("possible remote control port: %v", d.openPorts)
 				log.Printf("friendlyName: %s", d.FriendlyName)
 				log.Printf("manufacturer: %s", d.Manufacturer)
 				log.Printf("modelDescription: %s", d.ModelDescription)
 				log.Printf("modelName: %s", d.ModelName)
 				for _, s := range d.ServiceList {
 					log.Printf("----service type: %s", s.ServiceType)
-					log.Printf("--------action list: %v", s.actions)
-					if s.ServiceType == "urn:schemas-upnp-org:service:ConnectionManager:1" {
-						log.Printf("getProtocolInfo: source:%v, sink:%v", s.sourceProto, s.sinkProto)
-					}
 				}
 				log.Printf("*********************************")
 			}
@@ -107,8 +115,14 @@ func main() {
 				if r.AddrIPv4 != nil {
 					log.Printf("service: %s ipv4: %v ipv6: %v, port: %v, TTL: %d, TXT: %v hostname: %s",
 						r.ServiceInstanceName(), r.AddrIPv4, r.AddrIPv6, r.Port, r.TTL, r.Text, r.HostName)
+					if mac, ok := hosts[r.AddrIPv4.String()]; ok {
+						log.Println("mdns in ", net.HardwareAddr(mac))
+					} else {
+						log.Println("mdns has no mac")
+					}
 				}
 				entries[r.ServiceInstanceName()] = r
+
 			} else {
 				if entry.HostName != "" {
 					// alway trust newer address because of expired cache
@@ -120,7 +134,7 @@ func main() {
 						}
 						// note that entry is a pointer to struct, so we can modify the struct directly
 					}
-					if addr := resolver.c.getIPv4AddrCache(entry.HostName); addr != nil {
+					if addr := resolver.c.getIPv6AddrCache(entry.HostName); addr != nil {
 						entry.AddrIPv6 = addr
 					}
 				}
