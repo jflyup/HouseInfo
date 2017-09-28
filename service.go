@@ -12,7 +12,7 @@ var (
 
 	// mDNS wildcard addresses
 	mdnsWildcardAddrIPv4 = &net.UDPAddr{
-		IP:   net.ParseIP("224.0.0.0"),
+		IP:   net.ParseIP("0.0.0.0"),
 		Port: 5353,
 	}
 	mdnsWildcardAddrIPv6 = &net.UDPAddr{
