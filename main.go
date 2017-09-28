@@ -23,7 +23,7 @@ func sendARP(dst net.IP) net.HardwareAddr {
 	var nargs uintptr = 4
 	var len uint64 = 6
 	mac := []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
-	d := binary.BigEndian.Uint32(dst.To4())
+	d := binary.LittleEndian.Uint32(dst.To4())
 
 	// SendARP will send 3 ARP requests if no reply received on Windows 7
 	ret, _, callErr := syscall.Syscall6(
@@ -125,7 +125,6 @@ func main() {
 						if mac := sendARP(r.AddrIPv4); mac != nil {
 							log.Printf("IP %s is at %v", r.AddrIPv4, mac)
 						}
-
 					}
 				}
 				entries[r.ServiceInstanceName()] = r
@@ -137,6 +136,11 @@ func main() {
 							entry.AddrIPv4 = addr
 							log.Printf("service: %s ipv4: %v ipv6: %v, port: %v, TTL: %d, TXT: %v hostname: %s",
 								r.ServiceInstanceName(), r.AddrIPv4, r.AddrIPv6, r.Port, r.TTL, r.Text, r.HostName)
+							if _, ok := hosts[addr.String()]; !ok {
+								if mac := sendARP(addr); mac != nil {
+									log.Printf("IP %s is at %v", addr, mac)
+								}
+							}
 						}
 						// note that entry is a pointer to struct, so we can modify the struct directly
 					}
