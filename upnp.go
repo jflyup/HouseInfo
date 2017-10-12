@@ -56,7 +56,7 @@ type device struct {
 	Host             string
 	urlBase          string
 	location         string
-	ST               string
+	server           string
 	ipAddr           string
 	ServiceList      []*service `xml:"serviceList>service"`
 	DeviceList       []*device  `xml:"deviceList>device"`
@@ -213,7 +213,7 @@ func (d *device) getDeviceDesc() error {
 			if se.Name.Local == "device" {
 				// if urlBase not present, use host instead
 				if d.urlBase == "" {
-					d.urlBase = "http://" + d.Host + "/"
+					d.urlBase = "http://" + d.Host + "/" // TODO https?
 				} else {
 					if !strings.HasSuffix(d.urlBase, "/") {
 						d.urlBase += "/"
@@ -224,7 +224,7 @@ func (d *device) getDeviceDesc() error {
 					return err
 				}
 
-				log.Printf("url base: %s", d.urlBase)
+				// iterate device recursively
 				go iterateDevice(d)
 			}
 
@@ -302,29 +302,27 @@ func (u *UPNP) findDevice(st string) error {
 				v := strings.Trim(keyValue[1], " ")
 
 				switch strings.ToUpper(k) {
-				case "ST":
-					dev.ST = v
+				case "SERVER":
+					dev.server = v
 				case "LOCATION":
 					dev.location = v
 					dev.Host = strings.Split(strings.Split(v, "//")[1], "/")[0]
 				}
 			}
 
-			if !strings.HasPrefix(dev.ST, "uuid") {
-				u.hostsLock.Lock()
-				if devices, ok := u.hosts[dev.ipAddr]; ok {
-					if _, ok := locationSet[dev.location]; !ok {
-						locationSet[dev.location] = true
-						u.hosts[dev.ipAddr] = append(devices, dev)
-						go dev.getDeviceDesc()
-					}
-				} else {
-					u.hosts[dev.ipAddr] = append(u.hosts[dev.ipAddr], dev)
+			u.hostsLock.Lock()
+			if devices, ok := u.hosts[dev.ipAddr]; ok {
+				if _, ok := locationSet[dev.location]; !ok {
 					locationSet[dev.location] = true
+					u.hosts[dev.ipAddr] = append(devices, dev)
 					go dev.getDeviceDesc()
 				}
-				u.hostsLock.Unlock()
+			} else {
+				u.hosts[dev.ipAddr] = append(u.hosts[dev.ipAddr], dev)
+				locationSet[dev.location] = true
+				go dev.getDeviceDesc()
 			}
+			u.hostsLock.Unlock()
 		}
 	}
 
