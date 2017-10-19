@@ -1,49 +1,12 @@
 package main
 
 import (
-	"bytes"
-	"encoding/binary"
-	"encoding/json"
 	"log"
-	"net/http"
 	"os"
-	"syscall"
-	"unsafe"
 
 	"flag"
-	"net"
 	"time"
 )
-
-var (
-	iphlp, _ = syscall.LoadLibrary("iphlpapi.dll")
-	// SendARP is Windows API
-	SendARP, _ = syscall.GetProcAddress(iphlp, "SendARP")
-)
-
-// only work on Windows with go 1.8
-func sendARP(dst net.IP) net.HardwareAddr {
-	var nargs uintptr = 4
-	var len uint64 = 6
-	mac := []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
-	d := binary.LittleEndian.Uint32(dst.To4())
-
-	// SendARP will send 3 ARP requests if no reply received on Windows 7
-	ret, _, callErr := syscall.Syscall6(
-		uintptr(SendARP), nargs,
-		uintptr(d),
-		0,
-		uintptr(unsafe.Pointer(&mac[0])),
-		uintptr(unsafe.Pointer(&len)),
-		0,
-		0)
-
-	if callErr == 0 && ret == 0 {
-		return net.HardwareAddr(mac)
-	}
-
-	return nil
-}
 
 type document struct {
 	Mac          string
@@ -52,18 +15,9 @@ type document struct {
 	Txt          []string
 }
 
-func post(mac, name, hostname string, txt []string) {
-	u := document{Mac: mac, InstanceName: name, Hostname: hostname, Txt: txt}
-	b := new(bytes.Buffer)
-	json.NewEncoder(b).Encode(u)
-	http.Post("http://45.77.20.19:3000/mdns", "application/json; charset=utf-8", b)
-}
-
 func main() {
 	var logFile = flag.String("o", "", "output file")
 	flag.Parse()
-
-	defer syscall.FreeLibrary(iphlp)
 
 	if len(*logFile) != 0 {
 		f, err := os.OpenFile(*logFile, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0666)
@@ -144,12 +98,6 @@ func main() {
 						if mac := sendARP(r.AddrIPv4); mac != nil {
 							hosts[r.AddrIPv4.String()] = mac
 							log.Printf("IP %s is at %v", r.AddrIPv4, mac)
-						}
-					}
-
-					if r.Service == "_device-info._tcp" || r.Service == "_apple-mobdev2._tcp" || r.Service == "_homekit._tcp" {
-						if mac, ok := hosts[r.AddrIPv4.String()]; ok {
-							post(mac.String(), r.ServiceInstanceName(), r.HostName, r.Text)
 						}
 					}
 				}
