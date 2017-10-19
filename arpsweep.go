@@ -18,14 +18,14 @@ import (
 	"github.com/google/gopacket/pcap"
 )
 
-var liveHosts map[string][]byte
+var liveHosts map[string]net.HardwareAddr
 var mutex = &sync.Mutex{}
 var target = flag.String("t", "", "target")
 
 var stopped int32
 
-func arpsweep() map[string][]byte {
-	liveHosts = make(map[string][]byte)
+func arpsweep() map[string]net.HardwareAddr {
+	liveHosts = make(map[string]net.HardwareAddr)
 
 	devices, err := pcap.FindAllDevs()
 	if err != nil {

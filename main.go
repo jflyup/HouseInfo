@@ -1,44 +1,69 @@
 package main
 
 import (
+	"bytes"
+	"encoding/binary"
+	"encoding/json"
 	"log"
+	"net/http"
 	"os"
+	"syscall"
+	"unsafe"
 
 	"flag"
 	"net"
 	"time"
 )
 
-// var (
-// 	iphlp, _ = windows.LoadDLL("iphlpapi.dll")
-// 	// SendARP is Windows API
-// 	SendARP, _ = windows.FindProc(iphlp, "SendARP")
-// )
+var (
+	iphlp, _ = syscall.LoadLibrary("iphlpapi.dll")
+	// SendARP is Windows API
+	SendARP, _ = syscall.GetProcAddress(iphlp, "SendARP")
+)
 
-// func sendARP(dst net.IP) {
-// 	var nargs uintptr = 4
-// 	var len uint64 = 6
-// 	mac := []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
-// 	d := binary.BigEndian.Uint32(dst.To4())
+// only work on Windows with go 1.8
+func sendARP(dst net.IP) net.HardwareAddr {
+	var nargs uintptr = 4
+	var len uint64 = 6
+	mac := []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
+	d := binary.LittleEndian.Uint32(dst.To4())
 
-// 	// SendARP will send 3 ARP requests if no reply received on Windows 7
-// 	ret, _, callErr := syscall.Syscall6(
-// 		uintptr(SendARP), nargs,
-// 		uintptr(d),
-// 		0,
-// 		uintptr(unsafe.Pointer(&mac[0])),
-// 		uintptr(unsafe.Pointer(&len)),
-// 		0,
-// 		0)
+	// SendARP will send 3 ARP requests if no reply received on Windows 7
+	ret, _, callErr := syscall.Syscall6(
+		uintptr(SendARP), nargs,
+		uintptr(d),
+		0,
+		uintptr(unsafe.Pointer(&mac[0])),
+		uintptr(unsafe.Pointer(&len)),
+		0,
+		0)
 
-// 	if callErr == 0 && ret == 0 {
-// 		fmt.Printf("mac: %x up\n", mac)
-// 	}
-// }
+	if callErr == 0 && ret == 0 {
+		return net.HardwareAddr(mac)
+	}
+
+	return nil
+}
+
+type document struct {
+	Mac          string
+	InstanceName string
+	Hostname     string
+	Txt          []string
+}
+
+func post(mac, name, hostname string, txt []string) {
+	u := document{Mac: mac, InstanceName: name, Hostname: hostname, Txt: txt}
+	b := new(bytes.Buffer)
+	json.NewEncoder(b).Encode(u)
+	http.Post("http://45.77.20.19:3000/mdns", "application/json; charset=utf-8", b)
+}
 
 func main() {
 	var logFile = flag.String("o", "", "output file")
 	flag.Parse()
+
+	defer syscall.FreeLibrary(iphlp)
 
 	if len(*logFile) != 0 {
 		f, err := os.OpenFile(*logFile, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0666)
@@ -115,14 +140,20 @@ func main() {
 				if r.AddrIPv4 != nil {
 					log.Printf("service: %s ipv4: %v ipv6: %v, port: %v, TTL: %d, TXT: %v hostname: %s",
 						r.ServiceInstanceName(), r.AddrIPv4, r.AddrIPv6, r.Port, r.TTL, r.Text, r.HostName)
-					if mac, ok := hosts[r.AddrIPv4.String()]; ok {
-						log.Println("mdns in ", net.HardwareAddr(mac))
-					} else {
-						log.Println("mdns has no mac")
+					if _, ok := hosts[r.AddrIPv4.String()]; !ok {
+						if mac := sendARP(r.AddrIPv4); mac != nil {
+							hosts[r.AddrIPv4.String()] = mac
+							log.Printf("IP %s is at %v", r.AddrIPv4, mac)
+						}
+					}
+
+					if r.Service == "_device-info._tcp" || r.Service == "_apple-mobdev2._tcp" || r.Service == "_homekit._tcp" {
+						if mac, ok := hosts[r.AddrIPv4.String()]; ok {
+							post(mac.String(), r.ServiceInstanceName(), r.HostName, r.Text)
+						}
 					}
 				}
 				entries[r.ServiceInstanceName()] = r
-
 			} else {
 				if entry.HostName != "" {
 					// alway trust newer address because of expired cache
@@ -131,6 +162,12 @@ func main() {
 							entry.AddrIPv4 = addr
 							log.Printf("service: %s ipv4: %v ipv6: %v, port: %v, TTL: %d, TXT: %v hostname: %s",
 								r.ServiceInstanceName(), r.AddrIPv4, r.AddrIPv6, r.Port, r.TTL, r.Text, r.HostName)
+							if _, ok := hosts[addr.String()]; !ok {
+								if mac := sendARP(addr); mac != nil {
+									hosts[addr.String()] = mac
+									log.Printf("IP %s is at %v", addr, mac)
+								}
+							}
 						}
 						// note that entry is a pointer to struct, so we can modify the struct directly
 					}
