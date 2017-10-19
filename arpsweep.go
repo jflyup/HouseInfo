@@ -55,11 +55,11 @@ func arpsweep() map[string][]byte {
 // it's ever unable to write a packet.
 func scan(iface *pcap.Interface) error {
 	// We just look for IPv4 addresses, so try to find if the interface has one.
-	var addr *net.IPNet
+	var ifAddr *net.IPNet
 	if iface.Addresses != nil {
 		for _, a := range iface.Addresses {
 			if ip4 := a.IP.To4(); ip4 != nil {
-				addr = &net.IPNet{
+				ifAddr = &net.IPNet{
 					IP:   ip4,
 					Mask: a.Netmask[len(a.Netmask)-4:],
 				}
@@ -68,15 +68,15 @@ func scan(iface *pcap.Interface) error {
 		}
 	}
 	// Sanity-check that the interface has a good address.
-	if addr == nil {
+	if ifAddr == nil {
 		return errors.New("no good IP network found")
-	} else if addr.IP[0] == 127 {
+	} else if ifAddr.IP[0] == 127 || ifAddr.IP[0] == 169 {
 		return errors.New("skipping localhost")
-	} else if addr.Mask[0] != 0xff || addr.Mask[1] != 0xff {
-		return errors.New("mask means network is too large")
+	} else if ifAddr.Mask[0] != 0xff || ifAddr.Mask[1] != 0xff {
+		return errors.New("network is too large")
 	}
 
-	// use net.Interfaces() to get mac adddress of interface as pcap.Interface doesn't contain one
+	// use net.Interfaces() to get mac adddress of interface since pcap.Interface doesn't contain one
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		panic(err)
@@ -87,7 +87,7 @@ func scan(iface *pcap.Interface) error {
 		addrs, _ := i.Addrs()
 		for _, a := range addrs {
 			if ipnet, ok := a.(*net.IPNet); ok {
-				if ipnet.String() == addr.String() {
+				if ipnet.String() == ifAddr.String() {
 					localhost, _ := os.Hostname()
 					log.Printf("localhost: %s, mac: %v", localhost, i.HardwareAddr)
 					mac = i.HardwareAddr
@@ -100,7 +100,7 @@ func scan(iface *pcap.Interface) error {
 		}
 	}
 
-	log.Printf("Using network range %v for interface %v", addr, iface.Name)
+	log.Printf("Using network range %v for interface %v", ifAddr, iface.Name)
 
 	// Open up a pcap handle for packet reads/writes.
 	handle, err := pcap.OpenLive(iface.Name, 65536, true, pcap.BlockForever)
@@ -111,9 +111,9 @@ func scan(iface *pcap.Interface) error {
 
 	// Start up a goroutine to read in packet data.
 	stop := make(chan struct{})
-	go readARP(handle, mac, stop)
+	go readARP(handle, mac, stop, ifAddr)
 
-	go writeARP(handle, mac, addr)
+	go writeARP(handle, mac, ifAddr)
 	// exit after scanning for a while
 	timer := time.NewTimer(time.Second * time.Duration(10))
 	<-timer.C
@@ -128,10 +128,8 @@ func scan(iface *pcap.Interface) error {
 	return nil
 }
 
-// readARP watches a handle for incoming ARP responses we might care about, and prints them.
-//
 // readARP loops until 'stop' is closed.
-func readARP(handle *pcap.Handle, mac net.HardwareAddr, stop chan struct{}) {
+func readARP(handle *pcap.Handle, mac net.HardwareAddr, stop chan struct{}, ifAddr *net.IPNet) {
 	src := gopacket.NewPacketSource(handle, layers.LayerTypeEthernet)
 	in := src.Packets()
 	for {
@@ -146,36 +144,27 @@ func readARP(handle *pcap.Handle, mac net.HardwareAddr, stop chan struct{}) {
 			}
 			arp := arpLayer.(*layers.ARP)
 			if bytes.Equal(mac, arp.SourceHwAddress) {
-				// This is a packet I sent.
+				// This is a packet we sent.
 				continue
-			} else if arp.Operation == layers.ARPRequest {
-				// got broadcast arp request, consider the source host is alive
-				// TODO RWMutex?
-				mutex.Lock()
-				srcIP := net.IP(arp.SourceProtAddress).String()
-				if _, ok := liveHosts[srcIP]; !ok {
-					liveHosts[srcIP] = arp.SourceHwAddress
-				}
-				mutex.Unlock()
-				continue
-			}
-
-			mutex.Lock()
-			srcIP := net.IP(arp.SourceProtAddress).String()
-			if _, ok := liveHosts[srcIP]; !ok || len(*target) > 0 {
-				liveHosts[srcIP] = arp.SourceHwAddress
-				// Note:  we might get some packets here that aren't responses to ones we've sent,
-				// if for example someone else sends US an ARP request.  Doesn't much matter, though...
+			} else {
+				// if we got broadcast arp request, consider the source host is alive
+				// or got some packets here that aren't responses to ones we've sent,
 				// all information is good information :)
+				srcIP := net.IP(arp.SourceProtAddress)
+				if ifAddr.Contains(srcIP) {
+					mutex.Lock()
+					// always use new address
+					liveHosts[srcIP.String()] = arp.SourceHwAddress
+					mutex.Unlock()
+				}
 			}
-			mutex.Unlock()
 		}
 	}
 }
 
 // writeARP writes an ARP request for each address on our local network to the
 // pcap handle.
-func writeARP(handle *pcap.Handle, mac net.HardwareAddr, addr *net.IPNet) error {
+func writeARP(handle *pcap.Handle, mac net.HardwareAddr, ifAddr *net.IPNet) error {
 	// Set up all the layers' fields we can.
 	eth := layers.Ethernet{
 		SrcMAC:       mac,
@@ -189,7 +178,7 @@ func writeARP(handle *pcap.Handle, mac net.HardwareAddr, addr *net.IPNet) error 
 		ProtAddressSize:   4,
 		Operation:         layers.ARPRequest,
 		SourceHwAddress:   mac,
-		SourceProtAddress: []byte(addr.IP),
+		SourceProtAddress: []byte(ifAddr.IP),
 		DstHwAddress:      []byte{0, 0, 0, 0, 0, 0},
 	}
 	// Set up buffer and options for serialization.
@@ -212,9 +201,9 @@ func writeARP(handle *pcap.Handle, mac net.HardwareAddr, addr *net.IPNet) error 
 		}
 	} else {
 		// Send one packet for every address.
-		for _, ip := range ips(addr) {
+		for _, ip := range ips(ifAddr) {
 			mutex.Lock()
-			if _, ok := liveHosts[ip.String()]; !ok && ip.String() != addr.IP.String() {
+			if _, ok := liveHosts[ip.String()]; !ok && ip.String() != ifAddr.IP.String() {
 				arp.DstProtAddress = []byte(ip)
 				gopacket.SerializeLayers(buf, opts, &eth, &arp)
 				if atomic.LoadInt32(&stopped) == 0 {
@@ -228,7 +217,7 @@ func writeARP(handle *pcap.Handle, mac net.HardwareAddr, addr *net.IPNet) error 
 
 			// mimic Fing's strategy
 			if count == 100 {
-				go writeARP(handle, mac, addr)
+				go writeARP(handle, mac, ifAddr)
 			}
 			time.Sleep(time.Millisecond * time.Duration(10))
 		}
