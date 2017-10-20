@@ -13,7 +13,10 @@ var (
 )
 
 // only work on Windows with go 1.8
-func sendARP(dst net.IP) net.HardwareAddr {
+func sendARP(dst net.IP, mac chan struct {
+	mac net.HardwareAddr
+	ip  net.IP
+}) {
 	var nargs uintptr = 4
 	var len uint64 = 6
 	mac := []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
@@ -30,8 +33,12 @@ func sendARP(dst net.IP) net.HardwareAddr {
 		0)
 
 	if callErr == 0 && ret == 0 {
-		return net.HardwareAddr(mac)
+		mac <- struct {
+			mac net.HardwareAddr
+			ip  net.IP
+		}{
+			net.HardwareAddr(mac),
+			dst,
+		}
 	}
-
-	return nil
 }
