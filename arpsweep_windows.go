@@ -1,16 +1,25 @@
 package main
 
 import (
+	"encoding/binary"
+	"errors"
+	"log"
 	"net"
+	"sync"
 	"time"
 )
 
-func arpsweep() {
+var upHosts map[string]net.HardwareAddr
+var mutex = &sync.Mutex{}
+
+func arpsweep() map[string]net.HardwareAddr {
+
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		panic(err)
 	}
 
+	upHosts = make(map[string]net.HardwareAddr)
 	var wg sync.WaitGroup
 	for _, iface := range ifaces {
 		log.Printf("interface: %s", iface.Name)
@@ -23,23 +32,28 @@ func arpsweep() {
 			}
 		}(iface)
 	}
+
+	wg.Wait()
+
+	return upHosts
 }
 
 func scan(iface *net.Interface) error {
 	// We just look for IPv4 addresses, so try to find if the interface has one.
-	var addr *net.IPNet
-	if addrs, err := iface.Addrs(); err != nil {
+	addrs, err := iface.Addrs()
+	if err != nil {
 		return err
-	} else {
-		for _, a := range addrs {
-			if ipnet, ok := a.(*net.IPNet); ok {
-				if ip4 := ipnet.IP.To4(); ip4 != nil {
-					addr = &net.IPNet{
-						IP:   ip4,
-						Mask: ipnet.Mask[len(ipnet.Mask)-4:],
-					}
-					break
+	}
+
+	var addr *net.IPNet
+	for _, a := range addrs {
+		if ipnet, ok := a.(*net.IPNet); ok {
+			if ip4 := ipnet.IP.To4(); ip4 != nil {
+				addr = &net.IPNet{
+					IP:   ip4,
+					Mask: ipnet.Mask[len(ipnet.Mask)-4:],
 				}
+				break
 			}
 		}
 	}
@@ -52,23 +66,24 @@ func scan(iface *net.Interface) error {
 		return errors.New("network is too large")
 	}
 
-	chMacAddr := make(chan struct {
-		mac net.HardwareAddr
-		ip  net.IP
-	})
-
-	// Send one packet for every address.
+	var wg sync.WaitGroup
 	for _, ip := range ips(addr) {
-		go sendARP(ip, chMacAddr)
-		time.Sleep(time.Millisecond * 100)
+		wg.Add(1)
+		go func(ip net.IP) {
+			defer wg.Done()
+			if hwAddr := sendARP(ip); hwAddr != nil {
+				mutex.Lock()
+				upHosts[ip.String()] = hwAddr
+				mutex.Unlock()
+			}
+		}(ip)
+
+		time.Sleep(time.Millisecond * 200)
 	}
 
-	for {
-		select {
-		case result := <-chMacAddr:
-			log.Println(result)
-		}
-	}
+	wg.Wait()
+
+	return nil
 }
 
 // ips is a simple and not very good method for getting all IPv4 addresses from a
@@ -82,8 +97,8 @@ func ips(n *net.IPNet) (out []net.IP) {
 		var buf [4]byte
 		binary.BigEndian.PutUint32(buf[:], num)
 		out = append(out, net.IP(buf[:]))
-		mask += 1
-		num += 1
+		mask++
+		num++
 	}
 	return
 }

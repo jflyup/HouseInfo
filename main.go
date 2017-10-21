@@ -31,6 +31,7 @@ func main() {
 	log.Printf("start scanning:")
 
 	hosts := arpsweep()
+	log.Println("%v", hosts)
 
 	resolver, err := NewResolver(nil)
 

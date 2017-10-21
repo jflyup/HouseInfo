@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"net"
 	"syscall"
 	"unsafe"
@@ -13,10 +14,7 @@ var (
 )
 
 // only work on Windows with go 1.8
-func sendARP(dst net.IP, mac chan struct {
-	mac net.HardwareAddr
-	ip  net.IP
-}) {
+func sendARP(dst net.IP) net.HardwareAddr {
 	var nargs uintptr = 4
 	var len uint64 = 6
 	mac := []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}
@@ -33,12 +31,8 @@ func sendARP(dst net.IP, mac chan struct {
 		0)
 
 	if callErr == 0 && ret == 0 {
-		mac <- struct {
-			mac net.HardwareAddr
-			ip  net.IP
-		}{
-			net.HardwareAddr(mac),
-			dst,
-		}
+		return net.HardwareAddr(mac)
 	}
+
+	return nil
 }
