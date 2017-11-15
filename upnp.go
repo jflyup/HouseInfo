@@ -306,7 +306,9 @@ func (u *UPNP) findDevice(st string) error {
 					dev.server = v
 				case "LOCATION":
 					dev.location = v
-					dev.Host = strings.Split(strings.Split(v, "//")[1], "/")[0]
+					if strings.HasPrefix(dev.location, "http") {
+						dev.Host = strings.Split(strings.Split(v, "//")[1], "/")[0]
+					}
 				}
 			}
 

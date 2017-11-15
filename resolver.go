@@ -357,7 +357,7 @@ func (c *client) setIPv4AddrCache(host string, ipv4 net.IP) {
 	c.ipv4Lock.Lock()
 	defer c.ipv4Lock.Unlock()
 	// we don't want ipv4 link-local addr
-	if !ipv4.IsLinkLocalUnicast() {
+	if !ipv4.IsLinkLocalUnicast() && !ipv4.IsUnspecified() && !ipv4.IsLoopback() {
 		c.ipv4AddrCache[host] = ipv4
 	}
 }

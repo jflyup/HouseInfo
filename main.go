@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"flag"
+	"net"
 	"time"
 )
 
@@ -28,16 +29,54 @@ func main() {
 		log.SetOutput(f)
 	}
 
-	log.Printf("start scanning:")
-
-	hosts := arpsweep()
-	log.Println("%v", hosts)
-
-	resolver, err := NewResolver(nil)
-
+	// choose a network interface
+	ifaces, err := net.Interfaces()
 	if err != nil {
-		log.Println("Failed to initialize resolver:", err.Error())
-		os.Exit(1)
+		log.Fatal(err)
+	}
+
+	var ifAddr *net.IPNet
+	var iface net.Interface
+	for _, i := range ifaces {
+		if addrs, err := i.Addrs(); err == nil {
+			for _, a := range addrs {
+				if ipNet, ok := a.(*net.IPNet); ok {
+					if ip4 := ipNet.IP.To4(); ip4 != nil &&
+						!ip4.IsLinkLocalUnicast() &&
+						!ip4.IsUnspecified() &&
+						!ip4.IsLoopback() {
+						iface = i
+						ifAddr = ipNet
+						break
+					}
+				}
+			}
+		}
+	}
+	log.Printf("Using network range %v for interface %s", ifAddr, iface.Name)
+
+	// block
+	hosts, err := arpsweep(iface, ifAddr)
+	if err == nil {
+		for k, v := range liveHosts {
+			log.Printf("IP %s is at %v", k, net.HardwareAddr(v))
+		}
+	}
+
+	// check dup macs
+	macSet := make(map[string]bool)
+	var dupMacs []net.HardwareAddr
+	for _, mac := range hosts {
+		if _, ok := macSet[mac.String()]; ok {
+			dupMacs = append(dupMacs, mac)
+		} else {
+			macSet[mac.String()] = true
+		}
+	}
+
+	resolver, err := NewResolver(&iface)
+	if err != nil {
+		log.Fatal("Failed to initialize mdns resolver: ", err.Error())
 	}
 
 	chResult := make(chan *ServiceEntry)
@@ -105,9 +144,10 @@ func main() {
 				entries[r.ServiceInstanceName()] = r
 			} else {
 				if entry.HostName != "" {
-					// alway trust newer address because of expired cache
+					// always trust newer address
 					if addr := resolver.c.getIPv4AddrCache(entry.HostName); addr != nil {
 						if entry.AddrIPv4 == nil {
+							// note that entry is a pointer to struct, so we can modify the struct directly
 							entry.AddrIPv4 = addr
 							log.Printf("service: %s ipv4: %v ipv6: %v, port: %v, TTL: %d, TXT: %v hostname: %s",
 								r.ServiceInstanceName(), r.AddrIPv4, r.AddrIPv6, r.Port, r.TTL, r.Text, r.HostName)
@@ -118,7 +158,6 @@ func main() {
 								}
 							}
 						}
-						// note that entry is a pointer to struct, so we can modify the struct directly
 					}
 					if addr := resolver.c.getIPv6AddrCache(entry.HostName); addr != nil {
 						entry.AddrIPv6 = addr
