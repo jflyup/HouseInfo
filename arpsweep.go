@@ -4,7 +4,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/binary"
 	"log"
 	"net"
 
@@ -31,6 +30,7 @@ func arpsweep(iface net.Interface, ifAddr *net.IPNet) (map[string]net.HardwareAd
 	defer handle.Close()
 
 	liveHosts = make(map[string]net.HardwareAddr)
+	liveHosts[ifAddr.IP.String()] = iface.HardwareAddr
 	// Start up a goroutine to read in packet data.
 	stop := make(chan struct{})
 	go readARP(handle, iface.HardwareAddr, stop, ifAddr)
@@ -144,21 +144,4 @@ func writeARP(handle *pcap.Handle, mac net.HardwareAddr, ifAddr *net.IPNet) erro
 	}
 
 	return nil
-}
-
-// ips is a simple and not very good method for getting all IPv4 addresses from a
-// net.IPNet.  It returns all IPs it can over the channel it sends back, closing
-// the channel when done.
-func ips(n *net.IPNet) (out []net.IP) {
-	num := binary.BigEndian.Uint32([]byte(n.IP.To4()))
-	mask := binary.BigEndian.Uint32([]byte(n.Mask))
-	num &= mask
-	for mask < 0xffffffff {
-		var buf [4]byte
-		binary.BigEndian.PutUint32(buf[:], num)
-		out = append(out, net.IP(buf[:]))
-		mask++
-		num++
-	}
-	return
 }

@@ -1,11 +1,11 @@
 package main
 
 import (
-	"log"
-	"os"
-
 	"flag"
+	"log"
 	"net"
+	"os"
+	"strings"
 	"time"
 )
 
@@ -38,6 +38,12 @@ func main() {
 	var ifAddr *net.IPNet
 	var iface net.Interface
 	for _, i := range ifaces {
+		if ifAddr != nil {
+			break
+		}
+		if strings.Contains(i.Name, "Virtual") {
+			continue
+		}
 		if addrs, err := i.Addrs(); err == nil {
 			for _, a := range addrs {
 				if ipNet, ok := a.(*net.IPNet); ok {
@@ -53,12 +59,16 @@ func main() {
 			}
 		}
 	}
+
+	if ifAddr == nil {
+		log.Fatal("no proper v4 address")
+	}
 	log.Printf("Using network range %v for interface %s", ifAddr, iface.Name)
 
 	// block
 	hosts, err := arpsweep(iface, ifAddr)
 	if err == nil {
-		for k, v := range liveHosts {
+		for k, v := range hosts {
 			log.Printf("IP %s is at %v", k, net.HardwareAddr(v))
 		}
 	}
@@ -97,7 +107,7 @@ func main() {
 	}()
 
 	go func() {
-		u, err := NewUPNP()
+		u, err := NewUPNP(ifAddr)
 		if err != nil {
 			log.Printf("failed to init UPnP discovery")
 			return

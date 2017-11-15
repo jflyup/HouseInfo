@@ -63,12 +63,12 @@ type device struct {
 }
 
 // NewUPNP returns a new UPNP object with a populated device object.
-func NewUPNP() (*UPNP, error) {
+func NewUPNP(ifAddr *net.IPNet) (*UPNP, error) {
 	u := &UPNP{
 		hosts: make(map[string][]*device),
 	}
 
-	go u.findDevice("ssdp:all")
+	go u.findDevice(ifAddr, "ssdp:all")
 	time.Sleep(time.Millisecond * 1000)
 
 	return u, nil
@@ -253,14 +253,14 @@ func iterateDevice(d *device) {
 	}
 }
 
-func (u *UPNP) findDevice(st string) error {
+func (u *UPNP) findDevice(ifAddr *net.IPNet, st string) error {
 	search := "M-SEARCH * HTTP/1.1\r\n" +
 		"HOST: 239.255.255.250:1900\r\n" +
 		"ST: " + st + "\r\n" +
 		"MAN: \"ssdp:discover\"\r\n" +
 		"MX: 3\r\n\r\n"
 
-	localAddr, err := net.ResolveUDPAddr("udp", ":0")
+	localAddr, err := net.ResolveUDPAddr("udp", ifAddr.IP.String()+":0")
 	if err != nil {
 		return err
 	}
