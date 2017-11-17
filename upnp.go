@@ -187,14 +187,13 @@ func (d *device) getDeviceDesc() error {
 	header.Set("Host", d.Host)
 	header.Set("Connection", "keep-alive")
 
-	log.Printf("downloading from %s", d.location)
 	request, _ := http.NewRequest("GET", d.location, nil)
 	request.Header = header
 
 	response, err := http.DefaultClient.Do(request)
 
 	if response == nil || err != nil || response.StatusCode != 200 {
-		log.Printf("failed to get device description: %s", d.location)
+		log.Printf("failed to get device description: %s, error: %v", d.location, err)
 		return err
 	}
 
@@ -260,11 +259,11 @@ func (u *UPNP) findDevice(ifAddr *net.IPNet, st string) error {
 		"MAN: \"ssdp:discover\"\r\n" +
 		"MX: 3\r\n\r\n"
 
-	localAddr, err := net.ResolveUDPAddr("udp", ifAddr.IP.String()+":0")
+	laddr, err := net.ResolveUDPAddr("udp", ifAddr.IP.String()+":0")
 	if err != nil {
 		return err
 	}
-	conn, err := net.ListenUDP("udp", localAddr)
+	conn, err := net.ListenUDP("udp", laddr)
 	if err != nil {
 		return err
 	}
@@ -308,6 +307,10 @@ func (u *UPNP) findDevice(ifAddr *net.IPNet, st string) error {
 					dev.location = v
 					if strings.HasPrefix(dev.location, "http") {
 						dev.Host = strings.Split(strings.Split(v, "//")[1], "/")[0]
+						if dev.Host != remoteAddr.String() {
+							//log.Println("upnp location may be wrong: ", dev.Host, remoteAddr.String())
+							// sometimes the host in location url is not equal to address of sender
+						}
 					}
 				}
 			}

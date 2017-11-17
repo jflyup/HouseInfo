@@ -271,7 +271,7 @@ func (c *client) mainloop(result chan<- *ServiceEntry) {
 						log.Printf("illegal service instance: %s", rr.Hdr.Name)
 					}
 				case *dns.TXT:
-					// regard _device_info._tcp as a service (it's a TXT record)
+					// regard _device-info._tcp as a service (it's a TXT record)
 					if instance, st, domain, err := parseServiceName(rr.Hdr.Name); err == nil {
 						if _, ok := entries[rr.Hdr.Name]; !ok {
 							entries[rr.Hdr.Name] = NewServiceEntry(

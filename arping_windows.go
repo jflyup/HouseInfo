@@ -9,7 +9,7 @@ import (
 
 var (
 	iphlp, _ = syscall.LoadLibrary("iphlpapi.dll")
-	// SendARP is Windows API
+	// SendARP is a Windows API
 	SendARP, _ = syscall.GetProcAddress(iphlp, "SendARP")
 )
 

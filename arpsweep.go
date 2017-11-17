@@ -8,7 +8,6 @@ import (
 	"net"
 
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/google/gopacket"
@@ -18,8 +17,6 @@ import (
 
 var liveHosts map[string]net.HardwareAddr
 var mutex = &sync.Mutex{}
-
-var stopped int32
 
 func arpsweep(iface net.Interface, ifAddr *net.IPNet) (map[string]net.HardwareAddr, error) {
 	// Open up a pcap handle for packet reads/writes.
@@ -36,9 +33,6 @@ func arpsweep(iface net.Interface, ifAddr *net.IPNet) (map[string]net.HardwareAd
 	go readARP(handle, iface.HardwareAddr, stop, ifAddr)
 
 	writeARP(handle, iface.HardwareAddr, ifAddr)
-	// exit after scanning for a while
-	// timer := time.NewTimer(time.Second * time.Duration(10))
-	//<-timer.C
 	close(stop)
 
 	return liveHosts, nil
@@ -104,36 +98,22 @@ func writeARP(handle *pcap.Handle, mac net.HardwareAddr, ifAddr *net.IPNet) erro
 		ComputeChecksums: true,
 	}
 
-	//if len(*target) > 1 {
-	//	ip := net.ParseIP(*target)
-	//	arp.DstProtAddress = ip.To4()
-	//	gopacket.SerializeLayers(buf, opts, &eth, &arp)
-	//	// Ethernet requires that all packets be at least 60 bytes long,
-	//	// 64 bytes if you include the Frame Check Sequence at the end
-	//	if err := handle.WritePacketData(buf.Bytes()); err != nil {
-	//		return err
-	//	}
-
 	// 3 round
 	for i := 0; i < 3; i++ {
 		// Send one packet for every address.
 		for _, ip := range ips(ifAddr) {
 			mutex.Lock()
 			if _, ok := liveHosts[ip.String()]; !ok && ip.String() != ifAddr.IP.String() {
-				if atomic.LoadInt32(&stopped) == 0 {
-					arp.DstProtAddress = []byte(ip)
-					// SerializeLayers clears the given write buffer
-					if err := gopacket.SerializeLayers(buf, opts, &eth, &arp); err != nil {
-						log.Println(err)
-						return err
-					} else {
-						if err := handle.WritePacketData(buf.Bytes()); err != nil {
-							log.Println(err)
-							return err
-						}
-					}
-				} else {
-					return nil
+				arp.DstProtAddress = []byte(ip)
+				// SerializeLayers clears the given write buffer
+				if err := gopacket.SerializeLayers(buf, opts, &eth, &arp); err != nil {
+					log.Println(err)
+					return err
+				}
+
+				if err := handle.WritePacketData(buf.Bytes()); err != nil {
+					log.Println(err)
+					return err
 				}
 			}
 			mutex.Unlock()

@@ -41,6 +41,7 @@ func main() {
 		if ifAddr != nil {
 			break
 		}
+		// skip virtual interface
 		if strings.Contains(i.Name, "Virtual") {
 			continue
 		}
@@ -61,7 +62,7 @@ func main() {
 	}
 
 	if ifAddr == nil {
-		log.Fatal("no proper v4 address")
+		log.Fatal("no valid v4 address")
 	}
 	log.Printf("Using network range %v for interface %s", ifAddr, iface.Name)
 
@@ -82,6 +83,9 @@ func main() {
 		} else {
 			macSet[mac.String()] = true
 		}
+	}
+	if len(dupMacs) > 0 {
+		log.Printf("dup mac: %v", dupMacs)
 	}
 
 	resolver, err := NewResolver(&iface)
@@ -121,7 +125,7 @@ func main() {
 			log.Printf("host: %s", k)
 			for _, d := range v {
 				log.Printf("device type: %s", d.DeviceType)
-				log.Printf("url base: %s", d.urlBase)
+				log.Printf("location: %s", d.location)
 				log.Printf("friendlyName: %s", d.FriendlyName)
 				log.Printf("manufacturer: %s", d.Manufacturer)
 				log.Printf("modelDescription: %s", d.ModelDescription)
