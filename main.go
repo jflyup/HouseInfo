@@ -66,6 +66,7 @@ func main() {
 	}
 	log.Printf("Using network range %v for interface %s", ifAddr, iface.Name)
 
+	probe()
 	// block
 	hosts, err := arpsweep(iface, ifAddr)
 	if err == nil {
