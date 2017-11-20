@@ -120,7 +120,7 @@ func (s *service) externalIPAddress() (net.IP, error) {
 		}
 	}
 
-	return nil, errors.New("upnp: could not get public ip from gateway")
+	return nil, errors.New("could not get wan ip from gateway")
 }
 
 type portMappingEntry struct {
@@ -289,8 +289,7 @@ func (u *UPNP) findDevice(ifAddr *net.IPNet, st string) error {
 			}
 			response := string(buf[:n])
 
-			dev := &device{}
-			dev.ipAddr = remoteAddr.IP.String()
+			dev := &device{ipAddr: remoteAddr.IP.String()}
 			lines := strings.Split(response, "\r\n")
 			for _, line := range lines {
 				keyValue := strings.SplitN(line, ":", 2)

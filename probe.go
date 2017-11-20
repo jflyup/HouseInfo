@@ -28,7 +28,7 @@ func probeSamsung() {
 			break
 		} else {
 			response := string(buf[:n])
-			log.Printf("recv %s from %v", response, remoteAddr)
+			log.Printf("50007 recv %s from %v", response, remoteAddr)
 			return
 			if conn, err := net.Dial("tcp", net.JoinHostPort(remoteAddr.IP.String(), "15000")); err != nil {
 				log.Println("failed to connect to 15000")
@@ -57,7 +57,7 @@ func probeLenovo() {
 			break
 		} else {
 			response := string(buf[:n])
-			log.Printf("recv %s from %v", response, remoteAddr)
+			log.Printf("55256 recv %s from %v", response, remoteAddr)
 			return
 		}
 	}
@@ -80,7 +80,7 @@ func probeLenovo2() {
 			break
 		} else {
 			response := string(buf[:n])
-			log.Printf("recv %s from %v", response, remoteAddr)
+			log.Printf("55255 recv %s from %v", response, remoteAddr)
 			return
 		}
 	}

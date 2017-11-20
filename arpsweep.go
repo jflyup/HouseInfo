@@ -15,6 +15,10 @@ import (
 	"github.com/google/gopacket/pcap"
 )
 
+func sendARP(dst net.IP) net.HardwareAddr {
+	return nil
+}
+
 var liveHosts map[string]net.HardwareAddr
 var mutex = &sync.Mutex{}
 
