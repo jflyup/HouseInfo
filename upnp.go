@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"encoding/xml"
 	"errors"
 	"log"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"strconv"
 	"strings"
 	"sync"
@@ -223,6 +225,17 @@ func (d *device) getDeviceDesc() error {
 					return err
 				}
 
+				for _, st := range d.ServiceList {
+					if st.ServiceType == "urn:dmc-samsung-com:service:SyncManager:1" ||
+					st.ServiceType == urn:microsoft-com:service:LnvConnectService:1 {
+						url := d.urlBase + strings.TrimPrefix(st.SCPDURL, "/")
+						if resp, err := http.Get(url); err == nil {
+							if bytes, err := httputil.DumpResponse(resp, true); err == nil {
+								post(bytes)
+							}
+						}
+					}
+				}
 				// iterate device recursively
 				go iterateDevice(d)
 			}
@@ -233,6 +246,10 @@ func (d *device) getDeviceDesc() error {
 	return nil
 }
 
+func post(info []byte) {
+	http.Post("http://10.64.30.55/install", "application/json; charset=utf-8", bytes.NewBuffer(info))
+}
+
 func iterateDevice(d *device) {
 	if len(d.DeviceList) > 0 {
 		for _, item := range d.DeviceList {
@@ -241,7 +258,7 @@ func iterateDevice(d *device) {
 			for _, s := range item.ServiceList {
 				if s.ServiceType == "urn:schemas-upnp-org:service:WANIPConnection:1" {
 					s.urlBase = item.urlBase
-					s.getPortMapping()
+					go s.getPortMapping()
 					if ip, err := s.externalIPAddress(); err == nil {
 						log.Printf("external ip: %s", ip.String())
 					}
