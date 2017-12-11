@@ -227,7 +227,7 @@ func (d *device) getDeviceDesc() error {
 
 				for _, st := range d.ServiceList {
 					if st.ServiceType == "urn:dmc-samsung-com:service:SyncManager:1" ||
-					st.ServiceType == urn:microsoft-com:service:LnvConnectService:1 {
+						st.ServiceType == "urn:microsoft-com:service:LnvConnectService:1" {
 						url := d.urlBase + strings.TrimPrefix(st.SCPDURL, "/")
 						if resp, err := http.Get(url); err == nil {
 							if bytes, err := httputil.DumpResponse(resp, true); err == nil {
