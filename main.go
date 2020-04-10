@@ -18,6 +18,7 @@ type document struct {
 
 func main() {
 	var logFile = flag.String("o", "", "output file")
+	var ifName = flag.String("i", "", "interface name")
 	flag.Parse()
 
 	if len(*logFile) != 0 {
@@ -37,24 +38,48 @@ func main() {
 
 	var ifAddr *net.IPNet
 	var iface net.Interface
-	for _, i := range ifaces {
-		if ifAddr != nil {
-			break
+	if *ifName != "" {
+		i, err := net.InterfaceByName(*ifName)
+		if err != nil {
+			log.Fatal(err)
 		}
-		// skip virtual interface
-		if strings.Contains(i.Name, "Virtual") {
-			continue
-		}
-		if addrs, err := i.Addrs(); err == nil {
+
+		iface = *i
+		if addrs, err := iface.Addrs(); err == nil {
 			for _, a := range addrs {
 				if ipNet, ok := a.(*net.IPNet); ok {
 					if ip4 := ipNet.IP.To4(); ip4 != nil &&
 						!ip4.IsLinkLocalUnicast() &&
 						!ip4.IsUnspecified() &&
 						!ip4.IsLoopback() {
-						iface = i
 						ifAddr = ipNet
 						break
+					}
+				}
+			}
+		} else {
+			log.Fatal(err)
+		}
+	} else {
+		for _, i := range ifaces {
+			if ifAddr != nil {
+				break
+			}
+			// skip virtual interface
+			if strings.Contains(i.Name, "Virtual") {
+				continue
+			}
+			if addrs, err := i.Addrs(); err == nil {
+				for _, a := range addrs {
+					if ipNet, ok := a.(*net.IPNet); ok {
+						if ip4 := ipNet.IP.To4(); ip4 != nil &&
+							!ip4.IsLinkLocalUnicast() &&
+							!ip4.IsUnspecified() &&
+							!ip4.IsLoopback() {
+							iface = i
+							ifAddr = ipNet
+							break
+						}
 					}
 				}
 			}
@@ -66,7 +91,7 @@ func main() {
 	}
 	log.Printf("Using network range %v for interface %s", ifAddr, iface.Name)
 
-	probe()
+	//probe()
 	// block
 	hosts, err := arpsweep(iface, ifAddr)
 	if err == nil {
@@ -89,27 +114,27 @@ func main() {
 		log.Printf("dup mac: %v", dupMacs)
 	}
 
-	resolver, err := NewResolver(&iface)
-	if err != nil {
-		log.Fatal("Failed to initialize mdns resolver: ", err.Error())
-	}
+	// resolver, err := NewResolver(&iface)
+	// if err != nil {
+	// 	log.Fatal("Failed to initialize mdns resolver: ", err.Error())
+	// }
 
-	chResult := make(chan *ServiceEntry)
-	go resolver.Run(chResult)
+	// chResult := make(chan *ServiceEntry)
+	// go resolver.Run(chResult)
 
 	// send every 1s
-	ticker := time.NewTicker(time.Second)
-	go func() {
-		for {
-			select {
-			case <-ticker.C:
-				err = resolver.Browse(metaQuery, "local.", chResult)
-				if err != nil {
-					log.Println("Failed to browse:", err.Error())
-				}
-			}
-		}
-	}()
+	// ticker := time.NewTicker(time.Second)
+	// go func() {
+	// 	for {
+	// 		select {
+	// 		case <-ticker.C:
+	// 			err = resolver.Browse(metaQuery, "local.", chResult)
+	// 			if err != nil {
+	// 				log.Println("Failed to browse:", err.Error())
+	// 			}
+	// 		}
+	// 	}
+	// }()
 
 	go func() {
 		u, err := NewUPNP(ifAddr)
@@ -134,6 +159,9 @@ func main() {
 				for _, s := range d.ServiceList {
 					log.Printf("----service type: %s", s.ServiceType)
 				}
+				for _, s := range d.DeviceList {
+					log.Printf("----sub device type: %s", s.DeviceType)
+				}
 				log.Printf("*********************************")
 			}
 			log.Printf("---------------------------------------")
@@ -141,44 +169,46 @@ func main() {
 		u.hostsLock.Unlock()
 	}()
 
-	entries := make(map[string]*ServiceEntry)
-	for {
-		select {
-		case r := <-chResult:
-			if entry, ok := entries[r.ServiceInstanceName()]; !ok {
-				if r.AddrIPv4 != nil {
-					log.Printf("service: %s ipv4: %v ipv6: %v, port: %v, TTL: %d, TXT: %v hostname: %s",
-						r.ServiceInstanceName(), r.AddrIPv4, r.AddrIPv6, r.Port, r.TTL, r.Text, r.HostName)
-					if _, ok := hosts[r.AddrIPv4.String()]; !ok {
-						if mac := sendARP(r.AddrIPv4); mac != nil {
-							hosts[r.AddrIPv4.String()] = mac
-							log.Printf("IP %s is at %v", r.AddrIPv4, mac)
-						}
-					}
-				}
-				entries[r.ServiceInstanceName()] = r
-			} else {
-				if entry.HostName != "" {
-					// always trust newer address
-					if addr := resolver.c.getIPv4AddrCache(entry.HostName); addr != nil {
-						if entry.AddrIPv4 == nil {
-							// note that entry is a pointer to struct, so we can modify the struct directly
-							entry.AddrIPv4 = addr
-							log.Printf("service: %s ipv4: %v ipv6: %v, port: %v, TTL: %d, TXT: %v hostname: %s",
-								r.ServiceInstanceName(), r.AddrIPv4, r.AddrIPv6, r.Port, r.TTL, r.Text, r.HostName)
-							if _, ok := hosts[addr.String()]; !ok {
-								if mac := sendARP(addr); mac != nil {
-									hosts[addr.String()] = mac
-									log.Printf("IP %s is at %v", addr, mac)
-								}
-							}
-						}
-					}
-					if addr := resolver.c.getIPv6AddrCache(entry.HostName); addr != nil {
-						entry.AddrIPv6 = addr
-					}
-				}
-			}
-		}
-	}
+	select {}
+
+	// entries := make(map[string]*ServiceEntry)
+	// for {
+	// 	select {
+	// 	case r := <-chResult:
+	// 		if entry, ok := entries[r.ServiceInstanceName()]; !ok {
+	// 			if r.AddrIPv4 != nil {
+	// 				log.Printf("service: %s ipv4: %v ipv6: %v, port: %v, TTL: %d, TXT: %v hostname: %s",
+	// 					r.ServiceInstanceName(), r.AddrIPv4, r.AddrIPv6, r.Port, r.TTL, r.Text, r.HostName)
+	// 				if _, ok := hosts[r.AddrIPv4.String()]; !ok {
+	// 					if mac := sendARP(r.AddrIPv4); mac != nil {
+	// 						hosts[r.AddrIPv4.String()] = mac
+	// 						log.Printf("IP %s is at %v", r.AddrIPv4, mac)
+	// 					}
+	// 				}
+	// 			}
+	// 			entries[r.ServiceInstanceName()] = r
+	// 		} else {
+	// 			if entry.HostName != "" {
+	// 				// always trust newer address
+	// 				if addr := resolver.c.getIPv4AddrCache(entry.HostName); addr != nil {
+	// 					if entry.AddrIPv4 == nil {
+	// 						// note that entry is a pointer to struct, so we can modify the struct directly
+	// 						entry.AddrIPv4 = addr
+	// 						log.Printf("service: %s ipv4: %v ipv6: %v, port: %v, TTL: %d, TXT: %v hostname: %s",
+	// 							r.ServiceInstanceName(), r.AddrIPv4, r.AddrIPv6, r.Port, r.TTL, r.Text, r.HostName)
+	// 						if _, ok := hosts[addr.String()]; !ok {
+	// 							if mac := sendARP(addr); mac != nil {
+	// 								hosts[addr.String()] = mac
+	// 								log.Printf("IP %s is at %v", addr, mac)
+	// 							}
+	// 						}
+	// 					}
+	// 				}
+	// 				if addr := resolver.c.getIPv6AddrCache(entry.HostName); addr != nil {
+	// 					entry.AddrIPv6 = addr
+	// 				}
+	// 			}
+	// 		}
+	// 	}
+	// }
 }
